@@ -1,0 +1,13 @@
+Astropy Coordinates Help
+========================
+
+This module provides classes for representing celestial coordinates and transforming them between different systems.
+
+Common systems:
+- ICRS (International Celestial Reference System)
+- Galactic
+- AltAz (Altitude-Azimuth)
+- FK5, FK4
+
+Usage in Flutter:
+Enter RA and Dec in the fields provided and click "Convert" to see the equivalent coordinates in the Galactic system.

@@ -1,0 +1,12 @@
+Astropy Units Help
+==================
+
+The units module handles physical quantities with units.
+
+Supported Units:
+- length: m, km, pc, ly, AU
+- time: s, min, h, d, yr
+- angle: deg, rad, arcsec, arcmin
+
+Example:
+1.0 * u.pc to u.ly  => 3.26156 ly
