@@ -9,9 +9,8 @@ from erfa import ufunc as erfa_ufunc
 import astropy.units as u
 from astropy.coordinates.angles import Angle, Latitude, Longitude
 from astropy.coordinates.distances import Distance
-from astropy.coordinates.matrix_utilities import is_O3
+from astropy.coordinates.matrix_utilities import is_rotation_or_reflection
 from astropy.utils import classproperty
-from astropy.utils.compat import COPY_IF_NEEDED
 
 from .base import BaseDifferential, BaseRepresentation
 from .cartesian import CartesianRepresentation
@@ -84,9 +83,9 @@ class UnitSphericalRepresentation(BaseRepresentation):
         sinlon, coslon = np.sin(self.lon), np.cos(self.lon)
         sinlat, coslat = np.sin(self.lat), np.cos(self.lat)
         return {
-            "lon": CartesianRepresentation(-sinlon, coslon, 0.0, copy=COPY_IF_NEEDED),
+            "lon": CartesianRepresentation(-sinlon, coslon, 0.0, copy=None),
             "lat": CartesianRepresentation(
-                -sinlat * coslon, -sinlat * sinlon, coslat, copy=COPY_IF_NEEDED
+                -sinlat * coslon, -sinlat * sinlon, coslat, copy=None
             ),
         }
 
@@ -124,18 +123,10 @@ class UnitSphericalRepresentation(BaseRepresentation):
         if isinstance(other_class, type) and not differential_class:
             if issubclass(other_class, PhysicsSphericalRepresentation):
                 return other_class(
-                    phi=self.lon,
-                    theta=90 * u.deg - self.lat,
-                    r=1.0,
-                    copy=COPY_IF_NEEDED,
+                    phi=self.lon, theta=90 * u.deg - self.lat, r=1.0, copy=None
                 )
             elif issubclass(other_class, SphericalRepresentation):
-                return other_class(
-                    lon=self.lon,
-                    lat=self.lat,
-                    distance=1.0,
-                    copy=COPY_IF_NEEDED,
-                )
+                return other_class(lon=self.lon, lat=self.lat, distance=1.0, copy=None)
 
         return super().represent_as(other_class, differential_class)
 
@@ -163,7 +154,7 @@ class UnitSphericalRepresentation(BaseRepresentation):
         # the transformation matrix does not need to be a rotation matrix,
         # so the unit-distance is not guaranteed. For speed, we check if the
         # matrix is in O(3) and preserves lengths.
-        if np.all(is_O3(matrix)):  # remain in unit-rep
+        if np.all(is_rotation_or_reflection(matrix)):  # remain in unit-rep
             xyz = erfa_ufunc.s2c(self.lon, self.lat)
             p = erfa_ufunc.rxp(matrix, xyz)
             lon, lat = erfa_ufunc.c2s(p)
@@ -501,12 +492,12 @@ class SphericalRepresentation(BaseRepresentation):
         sinlon, coslon = np.sin(self.lon), np.cos(self.lon)
         sinlat, coslat = np.sin(self.lat), np.cos(self.lat)
         return {
-            "lon": CartesianRepresentation(-sinlon, coslon, 0.0, copy=COPY_IF_NEEDED),
+            "lon": CartesianRepresentation(-sinlon, coslon, 0.0, copy=None),
             "lat": CartesianRepresentation(
-                -sinlat * coslon, -sinlat * sinlon, coslat, copy=COPY_IF_NEEDED
+                -sinlat * coslon, -sinlat * sinlon, coslat, copy=None
             ),
             "distance": CartesianRepresentation(
-                coslat * coslon, coslat * sinlon, sinlat, copy=COPY_IF_NEEDED
+                coslat * coslon, coslat * sinlon, sinlat, copy=None
             ),
         }
 
@@ -538,6 +529,16 @@ class SphericalRepresentation(BaseRepresentation):
                 )
                 return other_class(
                     lon=self.lon, lat=self.lat, differentials=diffs, copy=False
+                )
+
+            elif issubclass(other_class, RadialRepresentation):
+                diffs = self._re_represent_differentials(
+                    other_class, differential_class
+                )
+                return other_class(
+                    distance=self.distance,
+                    differentials=diffs,
+                    copy=False,
                 )
 
         return super().represent_as(other_class, differential_class)
@@ -617,10 +618,7 @@ class SphericalRepresentation(BaseRepresentation):
         lon_op, lat_op, distance_op = _spherical_op_funcs(op, *args)
 
         result = self.__class__(
-            lon_op(self.lon),
-            lat_op(self.lat),
-            distance_op(self.distance),
-            copy=COPY_IF_NEEDED,
+            lon_op(self.lon), lat_op(self.lat), distance_op(self.distance), copy=None
         )
         for key, differential in self.differentials.items():
             new_comps = (
@@ -711,12 +709,12 @@ class PhysicsSphericalRepresentation(BaseRepresentation):
         sinphi, cosphi = np.sin(self.phi), np.cos(self.phi)
         sintheta, costheta = np.sin(self.theta), np.cos(self.theta)
         return {
-            "phi": CartesianRepresentation(-sinphi, cosphi, 0.0, copy=COPY_IF_NEEDED),
+            "phi": CartesianRepresentation(-sinphi, cosphi, 0.0, copy=None),
             "theta": CartesianRepresentation(
-                costheta * cosphi, costheta * sinphi, -sintheta, copy=COPY_IF_NEEDED
+                costheta * cosphi, costheta * sinphi, -sintheta, copy=None
             ),
             "r": CartesianRepresentation(
-                sintheta * cosphi, sintheta * sinphi, costheta, copy=COPY_IF_NEEDED
+                sintheta * cosphi, sintheta * sinphi, costheta, copy=None
             ),
         }
 
@@ -751,6 +749,16 @@ class PhysicsSphericalRepresentation(BaseRepresentation):
                     differentials=diffs,
                     copy=False,
                 )
+            elif issubclass(other_class, RadialRepresentation):
+                diffs = self._re_represent_differentials(
+                    other_class, differential_class
+                )
+                return other_class(
+                    distance=self.r,
+                    differentials=diffs,
+                    copy=False,
+                )
+
             from .cylindrical import CylindricalRepresentation
 
             if issubclass(other_class, CylindricalRepresentation):
@@ -852,7 +860,7 @@ class PhysicsSphericalRepresentation(BaseRepresentation):
             phi_op(self.phi),
             phi_op(adjust_theta_sign(self.theta)),
             r_op(self.r),
-            copy=COPY_IF_NEEDED,
+            copy=None,
         )
         for key, differential in self.differentials.items():
             new_comps = (
@@ -917,8 +925,7 @@ class BaseSphericalDifferential(BaseDifferential):
         if (
             isinstance(other, BaseSphericalDifferential)
             and not isinstance(self, type(other))
-            or isinstance(other, RadialDifferential)
-        ):
+        ) or isinstance(other, RadialDifferential):
             all_components = set(self.components) | set(other.components)
             first, second = (self, other) if not reverse else (other, self)
             result_args = {
@@ -1016,7 +1023,7 @@ class UnitSphericalDifferential(BaseSphericalDifferential):
         # the transformation matrix does not need to be a rotation matrix,
         # so the unit-distance is not guaranteed. For speed, we check if the
         # matrix is in O(3) and preserves lengths.
-        if np.all(is_O3(matrix)):  # remain in unit-rep
+        if np.all(is_rotation_or_reflection(matrix)):  # remain in unit-rep
             # TODO! implement without Cartesian intermediate step.
             # some of this can be moved to the parent class.
             diff = super().transform(matrix, base, transformed_base)
@@ -1177,8 +1184,7 @@ class BaseSphericalCosLatDifferential(BaseDifferential):
         if (
             isinstance(other, BaseSphericalCosLatDifferential)
             and not isinstance(self, type(other))
-            or isinstance(other, RadialDifferential)
-        ):
+        ) or isinstance(other, RadialDifferential):
             all_components = set(self.components) | set(other.components)
             first, second = (self, other) if not reverse else (other, self)
             result_args = {
@@ -1277,7 +1283,7 @@ class UnitSphericalCosLatDifferential(BaseSphericalCosLatDifferential):
         # the transformation matrix does not need to be a rotation matrix,
         # so the unit-distance is not guaranteed. For speed, we check if the
         # matrix is in O(3) and preserves lengths.
-        if np.all(is_O3(matrix)):  # remain in unit-rep
+        if np.all(is_rotation_or_reflection(matrix)):  # remain in unit-rep
             # TODO! implement without Cartesian intermediate step.
             diff = super().transform(matrix, base, transformed_base)
 

@@ -24,9 +24,11 @@ The exceptions are below:
 .. toctree::
    :maxdepth: 1
 
-   iers
    data
-   masked/index
+
+:ref:`utils-iers`
+
+:ref:`utils-masked`
 
 .. note:: The ``astropy.utils.compat`` subpackage is not included in this
     documentation. It contains utility modules for compatibility with

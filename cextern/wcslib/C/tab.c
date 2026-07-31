@@ -1,6 +1,6 @@
 /*============================================================================
-  WCSLIB 8.2 - an implementation of the FITS WCS standard.
-  Copyright (C) 1995-2023, Mark Calabretta
+  WCSLIB 8.9 - an implementation of the FITS WCS standard.
+  Copyright (C) 1995-2026, Mark Calabretta
 
   This file is part of WCSLIB.
 
@@ -18,12 +18,14 @@
   along with WCSLIB.  If not, see http://www.gnu.org/licenses.
 
   Author: Mark Calabretta, Australia Telescope National Facility, CSIRO.
-  http://www.atnf.csiro.au/people/Mark.Calabretta
-  $Id: tab.c,v 8.2.1.2 2023/11/29 07:39:44 mcalabre Exp mcalabre $
+  http://www.atnf.csiro.au/computing/software/wcs
+  $Id: tab.c,v 8.9 2026/06/18 13:00:03 mcalabre Exp $
 *===========================================================================*/
 
+#include <limits.h>
 #include <math.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -81,7 +83,16 @@ int tabini(int alloc, int M, const int K[], struct tabprm *tab)
           "non-negative, got %d", K[m]);
       }
 
-      N *= K[m];
+      if (K[m] == 0) {
+        // Axis lengths as yet unknown.
+	N = 0;
+      } else if (N < INT_MAX / K[m]) {
+        N *= K[m];
+      } else {
+        return wcserr_set(WCSERR_SET(TABERR_BAD_PARAMS),
+          "Invalid tabular parameters: No. elements in coordinate "
+          "array exceeds INT_MAX");
+      }
     }
 
   } else {
@@ -188,7 +199,7 @@ int tabini(int alloc, int M, const int K[], struct tabprm *tab)
         tab->index = tab->m_index;
 
       } else {
-        if (!(tab->index = calloc(M, sizeof(double *)))) {
+        if (!(tab->index = (double **)calloc(M, sizeof(double *)))) {
           return wcserr_set(TAB_ERRMSG(TABERR_MEMORY));
         }
 
@@ -197,7 +208,7 @@ int tabini(int alloc, int M, const int K[], struct tabprm *tab)
         tab->m_N = N;
         tab->m_index = tab->index;
 
-        if (!(tab->m_indxs = calloc(M, sizeof(double *)))) {
+        if (!(tab->m_indxs = (double **)calloc(M, sizeof(double *)))) {
           return wcserr_set(TAB_ERRMSG(TABERR_MEMORY));
         }
 
@@ -234,7 +245,6 @@ int tabini(int alloc, int M, const int K[], struct tabprm *tab)
     }
   }
 
-  tab->flag = 0;
   tab->M = M;
 
   // Set defaults.
@@ -261,6 +271,8 @@ int tabini(int alloc, int M, const int K[], struct tabprm *tab)
     *dp = UNDEFINED;
   }
 
+  tab->flag = 0;
+
   return 0;
 }
 
@@ -282,12 +294,12 @@ int tabmem(struct tabprm *tab)
 
 
   int M = tab->M;
-  int N = tab->M;
+  int N = M;
   for (int m = 0; m < M; m++) {
     if (tab->K[m] < 0) {
       return wcserr_set(WCSERR_SET(TABERR_BAD_PARAMS),
         "Invalid tabular parameters: Each element of K must be "
-        "non-negative, got %d", M);
+        "non-negative, got K[%d] = %d", m, tab->K[m]);
     }
 
     N *= tab->K[m];
@@ -334,6 +346,13 @@ int tabmem(struct tabprm *tab)
     }
   }
 
+  // Check memory allocation, balm for static code analysers.
+  if (tab->index == 0x0) {
+    // Not ppossible if tabini() has been called.
+    return wcserr_set(WCSERR_SET(TABERR_MEMORY),
+      "Null index in tabprm struct");
+  }
+
   for (int m = 0; m < tab->m_M; m++) {
     if (tab->m_indxs[m] == 0x0 || tab->m_indxs[m] == (double *)0x1) {
       if ((tab->m_indxs[m] = tab->index[m])) {
@@ -360,8 +379,6 @@ int tabcpy(int alloc, const struct tabprm *tabsrc, struct tabprm *tabdst)
 {
   static const char *function = "tabcpy";
 
-  int status;
-
   if (tabsrc == 0x0) return TABERR_NULL_POINTER;
   if (tabdst == 0x0) return TABERR_NULL_POINTER;
   struct wcserr **err = &(tabdst->err);
@@ -372,6 +389,7 @@ int tabcpy(int alloc, const struct tabprm *tabsrc, struct tabprm *tabdst)
       "M must be positive, got %d", M);
   }
 
+  int status;
   if ((status = tabini(alloc, M, tabsrc->K, tabdst))) {
     return status;
   }
@@ -489,8 +507,8 @@ int tabfree(struct tabprm *tab)
         for (int m = 0; m < tab->m_M; m++) {
           if (tab->m_indxs[m]) free(tab->m_indxs[m]);
         }
-        free(tab->m_index);
-        free(tab->m_indxs);
+        free((void *)tab->m_index);
+        free((void *)tab->m_indxs);
       }
 
       if (tab->m_coord) free(tab->m_coord);
@@ -533,11 +551,11 @@ int tabsize(const struct tabprm *tab, int sizes[2])
 {
   if (tab == 0x0) {
     sizes[0] = sizes[1] = 0;
-    return TABERR_SUCCESS;
+    return 0;
   }
 
   // Base size, in bytes.
-  sizes[0] = sizeof(struct tabprm);
+  sizes[0] = (int)sizeof(struct tabprm);
 
   // Total size of allocated memory, in bytes.
   sizes[1] = 0;
@@ -546,54 +564,82 @@ int tabsize(const struct tabprm *tab, int sizes[2])
   int M = tab->M;
 
   // tabprm::K[];
-  sizes[1] += M * sizeof(int);
+  sizes[1] += M * (int)sizeof(int);
 
   // tabprm::map[];
-  sizes[1] += M * sizeof(int);
+  sizes[1] += M * (int)sizeof(int);
 
   // tabprm::crval[];
-  sizes[1] += M * sizeof(double);
+  sizes[1] += M * (int)sizeof(double);
 
   // tabprm::index[] and tabprm::m_indxs;
-  sizes[1] += 2*M * sizeof(double *);
+  sizes[1] += 2*M * (int)sizeof(double *);
   for (int m = 0; m < M; m++) {
     if (tab->index[m]) {
-      sizes[1] += tab->K[m] * sizeof(double);
+      sizes[1] += tab->K[m] * (int)sizeof(double);
     }
   }
 
   // tabprm::coord[];
-  sizes[1] += M * tab->nc * sizeof(double);
+  sizes[1] += M * tab->nc * (int)sizeof(double);
 
   // tab::err[].
   wcserr_size(tab->err, exsizes);
   sizes[1] += exsizes[0] + exsizes[1];
 
   // The remaining arrays are allocated by tabset().
-  if (tab->flag != TABSET) {
-    return TABERR_SUCCESS;
+  if (abs(tab->flag) != TABSET) {
+    return 0;
   }
 
   // tabprm::sense[].
   if (tab->sense) {
-    sizes[1] += M * sizeof(int);
+    sizes[1] += M * (int)sizeof(int);
   }
 
   // tabprm::p0[].
   if (tab->p0) {
-    sizes[1] += M * sizeof(int);
+    sizes[1] += M * (int)sizeof(int);
   }
 
   // tabprm::delta[].
   if (tab->delta) {
-    sizes[1] += M * sizeof(double);
+    sizes[1] += M * (int)sizeof(double);
   }
 
   // tabprm::extrema[].
   int ne = (tab->nc / tab->K[0]) * 2 * M;
-  sizes[1] += ne * sizeof(double);
+  sizes[1] += ne * (int)sizeof(double);
 
-  return TABERR_SUCCESS;
+  return 0;
+}
+
+//----------------------------------------------------------------------------
+
+int tabenq(const struct tabprm *tab, int enquiry)
+
+{
+  // Initialize.
+  if (tab == 0x0) return TABERR_NULL_POINTER;
+
+  int answer = 0;
+
+  if (enquiry & TABENQ_MEM) {
+    if (tab->m_flag != TABSET) return 0;
+    answer = 1;
+  }
+
+  if (enquiry & TABENQ_SET) {
+    if (abs(tab->flag) != TABSET) return 0;
+    answer = 1;
+  }
+
+  if (enquiry & TABENQ_BYP) {
+    if (tab->flag != 1 && tab->flag != -TABSET) return 0;
+    answer = 1;
+  }
+
+  return answer;
 }
 
 //----------------------------------------------------------------------------
@@ -601,20 +647,21 @@ int tabsize(const struct tabprm *tab, int sizes[2])
 int tabprt(const struct tabprm *tab)
 
 {
-  char   *cp, text[128];
+  char   text[128], *tpe = text + 128;
   double *dp;
 
   if (tab == 0x0) return TABERR_NULL_POINTER;
 
-  if (tab->flag != TABSET) {
+  if (abs(tab->flag) != TABSET) {
     wcsprintf("The tabprm struct is UNINITIALIZED.\n");
     return 0;
   }
 
+  // Parameters supplied...
   wcsprintf("       flag: %d\n", tab->flag);
   wcsprintf("          M: %d\n", tab->M);
 
-  // Array dimensions.
+  // ...array dimensions.
   WCSPRINTF_PTR("          K: ", tab->K, "\n");
   wcsprintf("            ");
   for (int m = 0; m < tab->M; m++) {
@@ -622,7 +669,7 @@ int tabprt(const struct tabprm *tab)
   }
   wcsprintf("\n");
 
-  // Map vector.
+  // ...map vector.
   WCSPRINTF_PTR("        map: ", tab->map, "\n");
   wcsprintf("            ");
   for (int m = 0; m < tab->M; m++) {
@@ -630,7 +677,7 @@ int tabprt(const struct tabprm *tab)
   }
   wcsprintf("\n");
 
-  // Reference index value.
+  // ...reference index value.
   WCSPRINTF_PTR("      crval: ", tab->crval, "\n");
   wcsprintf("            ");
   for (int m = 0; m < tab->M; m++) {
@@ -638,43 +685,50 @@ int tabprt(const struct tabprm *tab)
   }
   wcsprintf("\n");
 
-  // Index vectors.
+  // ...index vectors.
   WCSPRINTF_PTR("      index: ", tab->index, "\n");
-  for (int m = 0; m < tab->M; m++) {
-    wcsprintf("   index[%d]: ", m);
-    WCSPRINTF_PTR("", tab->index[m], "");
-    if (tab->index[m]) {
-      for (int k = 0; k < tab->K[m]; k++) {
-        if (k%5 == 0) {
-          wcsprintf("\n            ");
+
+  if (tab->index != 0x0) {
+    for (int m = 0; m < tab->M; m++) {
+      wcsprintf("   index[%d]: ", m);
+      WCSPRINTF_PTR("", tab->index[m], "");
+      if (tab->index[m]) {
+        for (int k = 0; k < tab->K[m]; k++) {
+          if (k%5 == 0) {
+            wcsprintf("\n            ");
+          }
+          wcsprintf("  %#- 11.5g", tab->index[m][k]);
         }
-        wcsprintf("  %#- 11.5g", tab->index[m][k]);
       }
+      wcsprintf("\n");
     }
-    wcsprintf("\n");
   }
 
-  // Coordinate array.
+  // ...coordinate array.
   WCSPRINTF_PTR("      coord: ", tab->coord, "\n");
-  dp = tab->coord;
-  for (int n = 0; n < tab->nc; n++) {
-    // Array index.
-    int j = n;
-    cp = text;
-    for (int m = 0; m < tab->M; m++) {
-      int nd = (tab->K[m] < 10) ? 1 : 2;
-      sprintf(cp, ",%*d", nd, j % tab->K[m] + 1);
-      j /= tab->K[m];
-      cp += strlen(cp);
-    }
+  if ((dp = tab->coord)) {
+    for (int n = 0; n < tab->nc; n++) {
+      // Array index.
+      int j = n;
+      char *tp = text;
+      *tp = '\0';
+      for (int m = 0; m < tab->M; m++) {
+        tp += strlen(tp);
+        size_t tsize = tpe - tp;
+        int nd = (tab->K[m] < 10) ? 1 : 2;
+        snprintf(tp, tsize, ",%*d", nd, j % tab->K[m] + 1);
+        j /= tab->K[m];
+      }
 
-    wcsprintf("             (*%s)", text);
-    for (int m = 0; m < tab->M; m++) {
-      wcsprintf("  %#- 11.5g", *(dp++));
+      wcsprintf("             (*%s)", text);
+      for (int m = 0; m < tab->M; m++) {
+        wcsprintf("  %#- 11.5g", *(dp++));
+      }
+      wcsprintf("\n");
     }
-    wcsprintf("\n");
   }
 
+  // Derived values.
   wcsprintf("         nc: %d\n", tab->nc);
 
   WCSPRINTF_PTR("      sense: ", tab->sense, "\n");
@@ -705,27 +759,30 @@ int tabprt(const struct tabprm *tab)
   }
 
   WCSPRINTF_PTR("    extrema: ", tab->extrema, "\n");
-  dp = tab->extrema;
-  for (int n = 0; n < tab->nc/tab->K[0]; n++) {
-    // Array index.
-    int j = n;
-    cp = text;
-    *cp = '\0';
-    for (int m = 1; m < tab->M; m++) {
-      int nd = (tab->K[m] < 10) ? 1 : 2;
-      sprintf(cp, ",%*d", nd, j % tab->K[m] + 1);
-      j /= tab->K[m];
-      cp += strlen(cp);
-    }
+  if ((dp = tab->extrema)) {
+    for (int n = 0; n < tab->nc/tab->K[0]; n++) {
+      // Array index.
+      int j = n;
+      char *tp = text;
+      *tp = '\0';
+      for (int m = 1; m < tab->M; m++) {
+        tp += strlen(tp);
+        size_t tsize = tpe - tp;
+        int nd = (tab->K[m] < 10) ? 1 : 2;
+        snprintf(tp, tsize, ",%*d", nd, j % tab->K[m] + 1);
+        j /= tab->K[m];
+      }
 
-    wcsprintf("             (*,*%s)", text);
-    for (int m = 0; m < 2*tab->M; m++) {
-      if (m == tab->M) wcsprintf("->  ");
-      wcsprintf("  %#- 11.5g", *(dp++));
+      wcsprintf("             (*,*%s)", text);
+      for (int m = 0; m < 2*tab->M; m++) {
+        if (m == tab->M) wcsprintf("->  ");
+        wcsprintf("  %#- 11.5g", *(dp++));
+      }
+      wcsprintf("\n");
     }
-    wcsprintf("\n");
   }
 
+  // Error handling.
   WCSPRINTF_PTR("        err: ", tab->err, "\n");
   if (tab->err) {
     wcserr_prt(tab->err, "             ");
@@ -787,6 +844,7 @@ int tabset(struct tabprm *tab)
   static const char *function = "tabset";
 
   if (tab == 0x0) return TABERR_NULL_POINTER;
+  if (tab->flag == -TABSET) return 0;
   struct wcserr **err = &(tab->err);
 
   // Check the number of tabular coordinate axes.
@@ -838,24 +896,29 @@ int tabset(struct tabprm *tab)
   // Take memory if signalled to by wcstab().
   for (int m = 0; m < tab->m_M; m++) {
     if (tab->m_indxs[m] == (double *)0x1 &&
-      (tab->m_indxs[m] = tab->index[m])) {
+       (tab->m_indxs[m] = tab->index[m])) {
       tab->m_flag = TABSET;
     }
   }
 
   if (tab->m_coord == (double *)0x1 &&
-    (tab->m_coord = tab->coord)) {
+     (tab->m_coord = tab->coord)) {
     tab->m_flag = TABSET;
   }
 
 
   // Allocate memory for work vectors.
-  if (tab->flag != TABSET || tab->set_M < M) {
+  if (abs(tab->flag) != TABSET || tab->set_M < M) {
     // Free memory that may have been allocated previously.
     if (tab->sense)   free(tab->sense);
     if (tab->p0)      free(tab->p0);
     if (tab->delta)   free(tab->delta);
     if (tab->extrema) free(tab->extrema);
+
+    tab->sense   = 0x0;
+    tab->p0      = 0x0;
+    tab->delta   = 0x0;
+    tab->extrema = 0x0;
 
     // Allocate memory for internal arrays.
     if (!(tab->sense = calloc(M, sizeof(int)))) {
@@ -933,6 +996,9 @@ int tabset(struct tabprm *tab)
                 "monotonically decreasing");
             }
             break;
+          default:
+            // Not possible.
+            break;
           }
         }
       }
@@ -1002,11 +1068,11 @@ int tabset(struct tabprm *tab)
       }
     }
 
-    dmin += 2*M;
-    dmax += 2*M;
+    dmin += (ptrdiff_t)(2*M);
+    dmax += (ptrdiff_t)(2*M);
   }
 
-  tab->flag = TABSET;
+  tab->flag = (tab->flag == 1) ? -TABSET : TABSET;
 
   return 0;
 }
@@ -1030,7 +1096,7 @@ int tabx2s(
   struct wcserr **err = &(tab->err);
 
   // Initialize if required.
-  if (tab->flag != TABSET) {
+  if (abs(tab->flag) != TABSET) {
     if ((status = tabset(tab))) return status;
   }
 
@@ -1038,9 +1104,9 @@ int tabx2s(
   int M = tab->M;
 
   status = 0;
-  register const double *xp = x;
-  register double *wp = world;
-  register int *statp = stat;
+  const double *xp = x;
+  double *wp = world;
+  int *statp = stat;
   for (int n = 0; n < ncoord; n++) {
     // Determine the indexes.
     int *Km = tab->K;
@@ -1194,7 +1260,7 @@ int tabx2s(
     int nv = 1 << M;
     for (int iv = 0; iv < nv; iv++) {
       // Locate vertex in the coordinate array and compute its weight.
-      int offset = 0;
+      ptrdiff_t offset = 0;
       double wgt = 1.0;
       for (int m = M-1; m >= 0; m--) {
         offset *= tab->K[m];
@@ -1255,25 +1321,30 @@ int tabs2x(
   struct wcserr **err = &(tab->err);
 
   // Initialize if required.
-  if (tab->flag != TABSET) {
+  if (abs(tab->flag) != TABSET) {
     if ((status = tabset(tab))) return status;
   }
 
   // This is used a lot.
   int M = tab->M;
+  if (M < 1) {
+    // Won't get past tabset(), balm for static code analysers.
+    return wcserr_set(WCSERR_SET(TABERR_BAD_PARAMS),
+      "Invalid tabular parameters: M must be positive, got %d", M);
+  }
 
   double **tabcoord = 0x0;
   int nv = 0;
-  if (M > 1) {
+  if (1 < M) {
     nv = 1 << M;
-    tabcoord = calloc(nv, sizeof(double *));
+    tabcoord = (double **)calloc(nv, sizeof(double *));
   }
 
 
   status = 0;
-  register const double *wp = world;
-  register double *xp = x;
-  register int *statp = stat;
+  const double *wp = world;
+  double *xp = x;
+  int *statp = stat;
   for (int n = 0; n < ncoord; n++) {
     // Locate this coordinate in the coordinate array.
     int edge = 0;
@@ -1324,7 +1395,7 @@ int tabs2x(
         if (!edge) {
           // Addresses of the coordinates for each corner of the "voxel".
           for (int iv = 0; iv < nv; iv++) {
-            int offset = 0;
+            ptrdiff_t offset = 0;
             for (int m = M-1; m >= 0; m--) {
               offset *= tab->K[m];
               offset += tab->p0[m];
@@ -1435,7 +1506,7 @@ int tabs2x(
     statp++;
   }
 
-  if (tabcoord) free(tabcoord);
+  if (tabcoord) free((void *)tabcoord);
 
   return status;
 }

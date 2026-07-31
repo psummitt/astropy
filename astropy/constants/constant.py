@@ -6,7 +6,8 @@ import warnings
 
 import numpy as np
 
-from astropy.units.core import Unit, UnitsError
+from astropy.units.core import Unit
+from astropy.units.errors import UnitsError
 from astropy.units.quantity import Quantity
 from astropy.utils import lazyproperty
 from astropy.utils.exceptions import AstropyUserWarning
@@ -30,7 +31,7 @@ class ConstantMeta(type):
     among other reasons).
     """
 
-    def __new__(mcls, name, bases, d):
+    def __new__(cls, name, bases, d):
         def wrap(meth):
             @functools.wraps(meth)
             def wrapper(self, *args, **kwargs):
@@ -85,7 +86,7 @@ class ConstantMeta(type):
             ):
                 d[attr] = wrap(value)
 
-        return super().__new__(mcls, name, bases, d)
+        return super().__new__(cls, name, bases, d)
 
 
 class Constant(Quantity, metaclass=ConstantMeta):
@@ -129,7 +130,7 @@ class Constant(Quantity, metaclass=ConstantMeta):
                 raise TypeError(f"{cls} requires a reference.")
         name_lower = name.lower()
         instances = cls._registry.setdefault(name_lower, {})
-        # By-pass Quantity initialization, since units may not yet be
+        # Bypass Quantity initialization, since units may not yet be
         # initialized here, and we store the unit in string form.
         inst = np.array(value).view(cls)
 

@@ -1,7 +1,10 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
+from io import FileIO
+
 import numpy as np
 import pytest
+from numpy.testing import assert_array_equal
 
 from astropy import units as u
 from astropy.coordinates import (
@@ -129,9 +132,7 @@ def test_read_fileobj(tmp_path):
     t1.add_column(Column(name="a", data=[1, 2, 3]))
     t1.write(test_file)
 
-    import io
-
-    with io.FileIO(test_file, mode="r") as input_file:
+    with FileIO(test_file, mode="r") as input_file:
         t2 = Table.read(input_file)
         assert np.all(t2["a"] == [1, 2, 3])
 
@@ -139,16 +140,14 @@ def test_read_fileobj(tmp_path):
 def test_read_pathlikeobj(tmp_path):
     """Test reading a path-like object."""
 
-    test_file = tmp_path / "test.parquet"
+    test_file_path = tmp_path / "test.parquet"
+    test_file_str = str(test_file_path)
 
     t1 = Table()
     t1.add_column(Column(name="a", data=[1, 2, 3]))
-    t1.write(test_file)
+    t1.write(test_file_str)
 
-    import pathlib
-
-    p = pathlib.Path(test_file)
-    t2 = Table.read(p)
+    t2 = Table.read(test_file_path)
     assert np.all(t2["a"] == [1, 2, 3])
 
 
@@ -966,9 +965,9 @@ def test_parquet_read_generic(tmp_path):
     ]
     schema = pyarrow.schema(type_list)
 
-    _, parquet, writer_version = get_pyarrow()
-    # We use version='2.0' for full support of datatypes including uint32.
-    with parquet.ParquetWriter(filename, schema, version=writer_version) as writer:
+    _, parquet = get_pyarrow()
+
+    with parquet.ParquetWriter(filename, schema, version="2.4") as writer:
         arrays = [pyarrow.array(t1[name].data) for name in names]
         writer.write_table(pyarrow.Table.from_arrays(arrays, schema=schema))
 
@@ -979,6 +978,53 @@ def test_parquet_read_generic(tmp_path):
         values = _default_values(dtype)
         assert np.all(t2[str(dtype)] == values)
         assert t2[str(dtype)].dtype == dtype
+
+
+@pytest.mark.parametrize(
+    "type_name, expected_dtype",
+    [
+        ("string", "<U3"),
+        ("large_string", "<U3"),
+        ("string_view", "<U3"),
+        ("binary", "|S3"),
+        ("large_binary", "|S3"),
+        ("binary_view", "|S3"),
+    ],
+)
+def test_parquet_read_string_binary_variants(tmp_path, type_name, expected_dtype):
+    """Each arrow string/binary type variant rounds-trips to the expected
+    fixed-width numpy dtype. This exercises the individual ``is_string`` /
+    ``is_large_string`` / ``is_string_view`` (and binary) sub-checks in the
+    reader's type detection.
+    """
+    filename = tmp_path / f"test_{type_name}.parq"
+
+    arrow_type = getattr(pyarrow, type_name)()
+    if expected_dtype.startswith("|S"):
+        values = [b"abc", b"def", b"ghi"]
+    else:
+        values = ["abc", "def", "ghi"]
+
+    schema = pyarrow.schema([("c", arrow_type)])
+    pa_table = pyarrow.Table.from_arrays(
+        [pyarrow.array(values, type=arrow_type)], schema=schema
+    )
+    _, parquet = get_pyarrow()
+    try:
+        with parquet.ParquetWriter(filename, schema, version="2.4") as writer:
+            writer.write_table(pa_table)
+    except pyarrow.lib.ArrowNotImplementedError as exc:
+        # Older pyarrow (e.g. 16) recognises the view types in memory but
+        # cannot write them to parquet; such files therefore cannot exist
+        # for that pyarrow version, so the corresponding reader branch
+        # is unreachable and the round-trip is not testable.
+        pytest.skip(f"pyarrow cannot write {type_name} to parquet: {exc}")
+
+    with pytest.warns(AstropyUserWarning, match="No table::len"):
+        t = Table.read(filename)
+
+    assert t["c"].dtype == np.dtype(expected_dtype)
+    assert_array_equal(np.array(t["c"]), np.array(values, dtype=expected_dtype))
 
 
 @pytest.mark.skipif(not HAS_PANDAS, reason="requires pandas")
@@ -993,9 +1039,7 @@ def test_parquet_read_pandas(tmp_path):
         t1.add_column(Column(name=str(dtype), data=np.array(values, dtype=dtype)))
 
     df = t1.to_pandas()
-    # We use version='2.0' for full support of datatypes including uint32.
-    _, _, writer_version = get_pyarrow()
-    df.to_parquet(filename, version=writer_version)
+    df.to_parquet(filename, version="2.4")
 
     with pytest.warns(AstropyUserWarning, match="No table::len"):
         t2 = Table.read(filename)

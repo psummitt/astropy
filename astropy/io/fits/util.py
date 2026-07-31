@@ -5,7 +5,6 @@ import io
 import mmap
 import operator
 import os
-import platform
 import signal
 import sys
 import tempfile
@@ -17,9 +16,10 @@ from contextlib import contextmanager, suppress
 from functools import wraps
 
 import numpy as np
-from packaging.version import Version
 
 from astropy.utils import data
+from astropy.utils.compat import NUMPY_LT_2_5
+from astropy.utils.compat.optional_deps import HAS_DASK
 from astropy.utils.exceptions import AstropyUserWarning
 
 path_like = (str, bytes, os.PathLike)
@@ -241,7 +241,7 @@ def encode_ascii(s):
     if isinstance(s, str):
         return s.encode("ascii")
     elif isinstance(s, np.ndarray) and issubclass(s.dtype.type, np.str_):
-        ns = np.char.encode(s, "ascii").view(type(s))
+        ns = np.strings.encode(s, "ascii").view(type(s))
         if ns.dtype.itemsize != s.dtype.itemsize / 4:
             ns = ns.astype((np.bytes_, s.dtype.itemsize / 4))
         return ns
@@ -263,18 +263,18 @@ def decode_ascii(s):
             s = s.decode("ascii", errors="replace")
             return s.replace("\ufffd", "?")
     elif isinstance(s, np.ndarray) and issubclass(s.dtype.type, np.bytes_):
-        # np.char.encode/decode annoyingly don't preserve the type of the
+        # np.strings.encode/decode annoyingly don't preserve the type of the
         # array, hence the view() call
         # It also doesn't necessarily preserve widths of the strings,
         # hence the astype()
         if s.size == 0:
             # Numpy apparently also has a bug that if a string array is
-            # empty calling np.char.decode on it returns an empty float64
+            # empty calling np.strings.decode on it returns an empty float64
             # array : https://github.com/numpy/numpy/issues/13156
             dt = s.dtype.str.replace("S", "U")
             ns = np.array([], dtype=dt).view(type(s))
         else:
-            ns = np.char.decode(s, "ascii").view(type(s))
+            ns = np.strings.decode(s, "ascii").view(type(s))
         if ns.dtype.itemsize / 4 != s.dtype.itemsize:
             ns = ns.astype((np.str_, s.dtype.itemsize))
         return ns
@@ -301,12 +301,9 @@ def isreadable(f):
     if not hasattr(f, "read"):
         return False
 
-    if hasattr(f, "mode") and not any(c in f.mode for c in "r+"):
-        return False
-
     # Not closed, has a 'read()' method, and either has no known mode or a
     # readable mode--should be good enough to assume 'readable'
-    return True
+    return (not hasattr(f, "mode")) or any(c in f.mode for c in "r+")
 
 
 def iswritable(f):
@@ -324,12 +321,9 @@ def iswritable(f):
     if not hasattr(f, "write"):
         return False
 
-    if hasattr(f, "mode") and not any(c in f.mode for c in "wa+"):
-        return False
-
     # Note closed, has a 'write()' method, and either has no known mode or a
     # mode that supports writing--should be good enough to assume 'writable'
-    return True
+    return (not hasattr(f, "mode")) or any(c in f.mode for c in "wa+")
 
 
 def isfile(f):
@@ -499,38 +493,10 @@ def fill(text, width, **kwargs):
     return "\n\n".join(maybe_fill(p) for p in paragraphs)
 
 
-# On MacOS X 10.8 and earlier, there is a bug that causes numpy.fromfile to
-# fail when reading over 2Gb of data. If we detect these versions of MacOS X,
-# we can instead read the data in chunks. To avoid performance penalties at
-# import time, we defer the setting of this global variable until the first
-# time it is needed.
-CHUNKED_FROMFILE = None
-
-
 def _array_from_file(infile, dtype, count):
     """Create a numpy array from a file or a file-like object."""
     if isfile(infile):
-        global CHUNKED_FROMFILE
-        if CHUNKED_FROMFILE is None:
-            if sys.platform == "darwin" and Version(platform.mac_ver()[0]) < Version(
-                "10.9"
-            ):
-                CHUNKED_FROMFILE = True
-            else:
-                CHUNKED_FROMFILE = False
-
-        if CHUNKED_FROMFILE:
-            chunk_size = int(1024**3 / dtype.itemsize)  # 1Gb to be safe
-            if count < chunk_size:
-                return np.fromfile(infile, dtype=dtype, count=count)
-            else:
-                array = np.empty(count, dtype=dtype)
-                for beg in range(0, count, chunk_size):
-                    end = min(count, beg + chunk_size)
-                    array[beg:end] = np.fromfile(infile, dtype=dtype, count=end - beg)
-                return array
-        else:
-            return np.fromfile(infile, dtype=dtype, count=count)
+        return np.fromfile(infile, dtype=dtype, count=count)
     else:
         # treat as file-like object with "read" method; this includes gzip file
         # objects, because numpy.fromfile just reads the compressed bytes from
@@ -540,8 +506,7 @@ def _array_from_file(infile, dtype, count):
         array = np.ndarray(buffer=s, dtype=dtype, shape=(count,))
         # copy is needed because np.frombuffer returns a read-only view of the
         # underlying buffer
-        array = array.copy()
-        return array
+        return array.copy()
 
 
 _OSX_WRITE_LIMIT = (2**32) - 1
@@ -629,23 +594,9 @@ def _array_to_file_like(arr, fileobj):
         else:
             return
 
-    if hasattr(np, "nditer"):
-        # nditer version for non-contiguous arrays
-        for item in np.nditer(arr, order="C"):
-            fileobj.write(item.tobytes())
-    else:
-        # Slower version for Numpy versions without nditer;
-        # The problem with flatiter is it doesn't preserve the original
-        # byteorder
-        byteorder = arr.dtype.byteorder
-        if (sys.byteorder == "little" and byteorder == ">") or (
-            sys.byteorder == "big" and byteorder == "<"
-        ):
-            for item in arr.flat:
-                fileobj.write(item.byteswap().tobytes())
-        else:
-            for item in arr.flat:
-                fileobj.write(item.tobytes())
+    # nditer version for non-contiguous arrays
+    for item in np.nditer(arr, order="C"):
+        fileobj.write(item.tobytes())
 
 
 def _write_string(f, s):
@@ -716,12 +667,13 @@ def _str_to_num(val):
     return num
 
 
-def _words_group(s, width):
+def _words_group(s, width, first_width=None):
     """
-    Split a long string into parts where each part is no longer than ``strlen``
+    Split a long string into parts where each part is no longer than ``width``
     and no word is cut into two pieces.  But if there are any single words
-    which are longer than ``strlen``, then they will be split in the middle of
-    the word.
+    which are longer than ``width``, then they will be split in the middle of
+    the word.  If the width of the first part should be smaller, e.g., because
+    of a long HIERARCH header key, one can pass in ``first_width``.
     """
     words = []
     slen = len(s)
@@ -732,12 +684,13 @@ def _words_group(s, width):
 
     # locations of the blanks
     blank_loc = np.nonzero(arr == b" ")[0]
+    current_width = width if first_width is None else first_width
     offset = 0
     xoffset = 0
 
     while True:
         try:
-            loc = np.nonzero(blank_loc >= width + offset)[0][0]
+            loc = np.nonzero(blank_loc >= current_width + offset)[0][0]
         except IndexError:
             loc = len(blank_loc)
 
@@ -748,13 +701,14 @@ def _words_group(s, width):
 
         # check for one word longer than strlen, break in the middle
         if offset <= xoffset:
-            offset = min(xoffset + width, slen)
+            offset = min(xoffset + current_width, slen)
 
         # collect the pieces in a list
         words.append(s[xoffset:offset])
         if offset >= slen:
             break
         xoffset = offset
+        current_width = width
 
     return words
 
@@ -873,7 +827,10 @@ def _rstrip_inplace(array):
     # Note: the code will work if this fails; the chunks will just be larger.
     if b.ndim > 2:
         try:
-            b.shape = -1, b.shape[-1]
+            if NUMPY_LT_2_5:
+                b.shape = -1, b.shape[-1]
+            else:
+                b._set_shape((-1, b.shape[-1]))
         except AttributeError:  # can occur for non-contiguous arrays
             pass
     for j in range(0, b.shape[0], bufsize):
@@ -894,19 +851,10 @@ def _rstrip_inplace(array):
 
 
 def _is_dask_array(data):
-    """Check whether data is a dask array.
-
-    We avoid importing dask unless it is likely it is a dask array,
-    so that non-dask code is not slowed down.
-    """
-    if not hasattr(data, "compute"):
+    """Check whether data is a dask array."""
+    if not HAS_DASK or not hasattr(data, "compute"):
         return False
 
-    try:
-        from dask.array import Array
-    except ImportError:
-        # If we cannot import dask, surely this cannot be a
-        # dask array!
-        return False
-    else:
-        return isinstance(data, Array)
+    from dask.array import Array
+
+    return isinstance(data, Array)

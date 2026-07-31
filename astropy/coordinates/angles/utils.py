@@ -6,9 +6,9 @@ used internally in ``astropy.coordinates.angles``, and of possible use externall
 
 __all__ = [
     "angular_separation",
-    "position_angle",
-    "offset_by",
     "golden_spiral_grid",
+    "offset_by",
+    "position_angle",
     "uniform_spherical_random_surface",
     "uniform_spherical_random_volume",
 ]
@@ -22,7 +22,8 @@ from astropy.coordinates.representation import (
     SphericalRepresentation,
     UnitSphericalRepresentation,
 )
-from astropy.utils.compat import COPY_IF_NEEDED
+
+from .core import Angle
 
 _TWOPI = 2 * np.pi
 
@@ -84,8 +85,6 @@ def position_angle(lon1, lat1, lon2, lat2):
         following the appropriate `numpy` broadcasting rules.
 
     """
-    from .core import Angle
-
     deltalon = lon2 - lon1
     colat = np.cos(lat2)
 
@@ -114,8 +113,6 @@ def offset_by(lon, lat, posang, distance):
         these will contain arrays following the appropriate `numpy` broadcasting rules.
         0 <= lon < 2pi.
     """
-    from .core import Angle
-
     # Calculations are done using the spherical trigonometry sine and cosine rules
     # of the triangle A at North Pole,   B at starting point,   C at final point
     # with angles     A (change in lon), B (posang),            C (not used, but negative reciprocal posang)
@@ -229,5 +226,5 @@ def uniform_spherical_random_volume(size=1, max_radius=1):
 
     usph = uniform_spherical_random_surface(size=size)
 
-    r = np.cbrt(rng.uniform(size=size)) * u.Quantity(max_radius, copy=COPY_IF_NEEDED)
+    r = np.cbrt(rng.uniform(size=size)) * u.Quantity(max_radius, copy=None)
     return SphericalRepresentation(usph.lon, usph.lat, r)

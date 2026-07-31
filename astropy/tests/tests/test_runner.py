@@ -1,11 +1,14 @@
 import pytest
 
+from astropy.tests.helper import _skip_docstring_tests_with_optimized_python
+
 # Renamed these imports so that them being in the namespace will not
 # cause pytest 3 to discover them as tests and then complain that
 # they have __init__ defined.
 from astropy.tests.runner import TestRunner as _TestRunner
 from astropy.tests.runner import TestRunnerBase as _TestRunnerBase
 from astropy.tests.runner import keyword
+from astropy.utils.exceptions import AstropyDeprecationWarning
 
 
 def test_disable_kwarg():
@@ -14,14 +17,22 @@ def test_disable_kwarg():
         def remote_data(self, remote_data, kwargs):
             return NotImplemented
 
-    r = no_remote_data(".")
-    with pytest.raises(TypeError):
+    with pytest.warns(AstropyDeprecationWarning, match="The TestRunner"):
+        r = no_remote_data(".")
+    with (
+        pytest.raises(TypeError),
+        pytest.warns(AstropyDeprecationWarning, match="The test runner"),
+    ):
         r.run_tests(remote_data="bob")
 
 
 def test_wrong_kwarg():
-    r = _TestRunner(".")
-    with pytest.raises(TypeError):
+    with pytest.warns(AstropyDeprecationWarning, match="The TestRunner"):
+        r = _TestRunner(".")
+    with (
+        pytest.raises(TypeError),
+        pytest.warns(AstropyDeprecationWarning, match="The test runner"),
+    ):
         r.run_tests(spam="eggs")
 
 
@@ -31,8 +42,12 @@ def test_invalid_kwarg():
         def remote_data(self, remote_data, kwargs):
             return "bob"
 
-    r = bad_return(".")
-    with pytest.raises(TypeError):
+    with pytest.warns(AstropyDeprecationWarning, match="The TestRunner"):
+        r = bad_return(".")
+    with (
+        pytest.raises(TypeError),
+        pytest.warns(AstropyDeprecationWarning, match="The test runner"),
+    ):
         r.run_tests(remote_data="bob")
 
 
@@ -42,7 +57,8 @@ def test_new_kwarg():
         def spam(self, spam, kwargs):
             return [spam]
 
-    r = Spam(".")
+    with pytest.warns(AstropyDeprecationWarning, match="The TestRunner"):
+        r = Spam(".")
 
     args = r._generate_args(spam="spam")
 
@@ -59,13 +75,15 @@ def test_priority():
         def eggs(self, eggs, kwargs):
             return [eggs]
 
-    r = Spam(".")
+    with pytest.warns(AstropyDeprecationWarning, match="The TestRunner"):
+        r = Spam(".")
 
     args = r._generate_args(spam="spam", eggs="eggs")
 
     assert ["eggs", "spam"] == args
 
 
+@_skip_docstring_tests_with_optimized_python
 def test_docs():
     class Spam(_TestRunnerBase):
         @keyword()
@@ -82,6 +100,8 @@ def test_docs():
             """
             return [eggs]
 
-    r = Spam(".")
+    with pytest.warns(AstropyDeprecationWarning, match="The TestRunner"):
+        r = Spam(".")
+    assert "deprecated" in r.run_tests.__doc__
     assert "eggs" in r.run_tests.__doc__
     assert "Spam Spam Spam" in r.run_tests.__doc__

@@ -25,7 +25,7 @@ To see the a list of the available conversion formats:
 Cosmology
 *********
 
-.. automodule:: astropy.cosmology._io.cosmology
+.. automodule:: astropy.cosmology._src.io.builtin.cosmology
 
 
 .. _cosmology_io_builtin-mapping:
@@ -33,7 +33,7 @@ Cosmology
 Mapping
 *******
 
-.. automodule:: astropy.cosmology._io.mapping
+.. automodule:: astropy.cosmology._src.io.builtin.mapping
 
 
 .. _cosmology_io_builtin-table:
@@ -41,7 +41,7 @@ Mapping
 Table
 *****
 
-.. automodule:: astropy.cosmology._io.table
+.. automodule:: astropy.cosmology._src.io.builtin.table
 
 .. _cosmology_io_builtin-model:
 
@@ -49,7 +49,7 @@ Table
 Model
 *****
 
-.. automodule:: astropy.cosmology._io.model
+.. automodule:: astropy.cosmology._src.io.builtin.model
 
 
 
@@ -58,7 +58,7 @@ Model
 YAML
 ****
 
-.. automodule:: astropy.cosmology._io.yaml
+.. automodule:: astropy.cosmology._src.io.builtin.yaml
 
 
 .. _cosmology_io_builtin-row:
@@ -66,7 +66,7 @@ YAML
 Row
 ***
 
-.. automodule:: astropy.cosmology._io.row
+.. automodule:: astropy.cosmology._src.io.builtin.row
 
 
 
@@ -83,6 +83,7 @@ To see a list of the available read/write file formats:
      ascii.ecsv  Yes   Yes           Yes
      ascii.html  Yes   Yes           Yes
     ascii.latex   No   Yes           Yes
+     ascii.mrt   Yes   Yes           Yes
 
 
 .. _cosmology_io_builtin-ecsv:
@@ -90,7 +91,7 @@ To see a list of the available read/write file formats:
 ECSV
 ****
 
-.. automodule:: astropy.cosmology._io.ecsv
+.. automodule:: astropy.cosmology._src.io.builtin.ecsv
 
 
 .. _cosmology_io_builtin-latex:
@@ -98,7 +99,7 @@ ECSV
 LaTeX
 *****
 
-.. automodule:: astropy.cosmology._io.latex
+.. automodule:: astropy.cosmology._src.io.builtin.latex
 
 
 .. _cosmology_io_builtin-html:
@@ -106,4 +107,12 @@ LaTeX
 HTML
 ****
 
-.. automodule:: astropy.cosmology._io.html
+.. automodule:: astropy.cosmology._src.io.builtin.html
+
+
+.. _cosmology_io_builtin-mrt:
+
+MRT
+***
+
+.. automodule:: astropy.cosmology._src.io.builtin.mrt

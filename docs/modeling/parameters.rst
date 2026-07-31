@@ -39,6 +39,16 @@ cases, however, array-valued parameters have no meaning specific to the model,
 and are simply combined with input arrays during model evaluation according to
 the standard `Numpy broadcasting rules`_.
 
+
+.. note::
+
+    The value of a `~astropy.modeling.Parameter` which has not been set and has
+    no default value will be returned as ``nan`` and tracked internally as a ``None``
+    until the value for that ``Parameter`` has been set. For the case of a
+    ``Parameter`` with a custom ``getter`` / ``setter`` pair, the value will be
+    returned as whatever the output of the ``getter`` is when applied to a ``nan``
+    value.
+
 Parameter constraints
 =====================
 
@@ -89,7 +99,7 @@ Constraints can also be set when the model is initialized. For example::
 
     >>> g = Gaussian1D(amplitude=10.2, mean=2.3, stddev=1.2,
     ...                fixed={'stddev': True},
-    ... 	        bounds={'mean': (2.2, 2.4)})
+    ...                bounds={'mean': (2.2, 2.4)})
     >>> g.stddev.fixed
     True
     >>> g.mean.bounds

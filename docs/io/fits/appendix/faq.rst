@@ -323,9 +323,11 @@ like so:
         # Data we want to write.
         # 8 is the number of bytes per value, i.e. abs(header['BITPIX'])/8
         # (this example is assuming a 64-bit float)
-        # The -1 is to account for the final byte that we are about to
-        # write:
-        fobj.seek(len(header.tostring()) + (40000 * 40000 * 8) - 1)
+        file_length = len(header.tostring()) + (40000 * 40000 * 8)
+        # FITS files must be a multiple of 2880 bytes long; the final -1
+        # is to account for the final byte that we are about to write.
+        file_length = ((file_length + 2880 - 1) // 2880) * 2880 - 1
+        fobj.seek(file_length)
         fobj.write(b"\0")
 
 More generally, this can be written:
@@ -334,9 +336,9 @@ More generally, this can be written:
 
     shape = tuple(header[f"NAXIS{ii}"] for ii in range(1, header["NAXIS"] + 1))
     with open("large.fits", "rb+") as fobj:
-        fobj.seek(
-            len(header.tostring()) + (np.prod(shape) * np.abs(header["BITPIX"] // 8)) - 1
-        )
+        file_length = len(header.tostring()) + (np.prod(shape) * np.abs(header["BITPIX"] // 8))
+        file_length = ((file_length + 2880 - 1) // 2880) * 2880 - 1
+        fobj.seek(file_length)
         fobj.write(b"\0")
 
 On modern operating systems this will cause the file (past the header) to be
@@ -584,7 +586,7 @@ The `astropy.io.fits` module (originally PyFITS) is a "pure Python" FITS
 reader in that all of the code for parsing the FITS file format is in Python,
 though ``numpy`` is used to provide access to the FITS data via the
 `~numpy.ndarray` interface. `astropy.io.fits` currently also accesses the
-`CFITSIO <https://heasarc.gsfc.nasa.gov/fitsio/fitsio.html>`_ to support the
+`CFITSIO <https://heasarc.gsfc.nasa.gov/docs/software/fitsio/fitsio.html>`_ to support the
 FITS Tile Compression convention, but this feature is optional. It does not
 use CFITSIO outside of reading compressed images.
 

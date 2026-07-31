@@ -6,23 +6,27 @@
 # and the one in astropy/conftest.py
 
 import os
-import tempfile
+from pathlib import Path
 
 import pytest
 
 # Make sure we use temporary directories for the config and cache
-# so that the tests are insensitive to local configuration.
+# so that the tests are insensitive to local configuration. Note that this
+# is also set in the test runner, but we need to also set it here for
+# things to work properly in parallel mode
+# note: session-level + autouse doesn't require a cleanup phase
 
-os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp("astropy_config")
-os.environ["XDG_CACHE_HOME"] = tempfile.mkdtemp("astropy_cache")
 
-os.mkdir(os.path.join(os.environ["XDG_CONFIG_HOME"], "astropy"))
-os.mkdir(os.path.join(os.environ["XDG_CACHE_HOME"], "astropy"))
+@pytest.fixture(scope="session", autouse=True)
+def _session_level_cache_dir(tmp_path_factory):
+    os.environ["ASTROPY_CACHE_DIR"] = str(tmp_path_factory.mktemp("astropy_cache_"))
+    os.environ["XDG_CACHE_HOME"] = str(tmp_path_factory.mktemp("xdg_cache_"))
 
-# Note that we don't need to change the environment variables back or remove
-# them after testing, because they are only changed for the duration of the
-# Python process, and this configuration only matters if running pytest
-# directly, not from e.g. an IPython session.
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_level_config_dir(tmp_path_factory):
+    os.environ["ASTROPY_CONFIG_DIR"] = str(tmp_path_factory.mktemp("astropy_config_"))
+    os.environ["XDG_CONFIG_HOME"] = str(tmp_path_factory.mktemp("xdg_config_"))
 
 
 @pytest.fixture(autouse=True)
@@ -34,7 +38,7 @@ def _docdir(request):
         # Don't apply this fixture to io.rst.  It reads files and doesn't write.
         # Implementation from https://github.com/pytest-dev/pytest/discussions/10437
         if "io.rst" not in request.node.name:
-            old_cwd = os.getcwd()
+            old_cwd = Path.cwd()
             tmp_path = request.getfixturevalue("tmp_path")
             os.chdir(tmp_path)
             yield

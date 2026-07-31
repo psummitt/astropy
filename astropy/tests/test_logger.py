@@ -9,7 +9,7 @@ import warnings
 import pytest
 
 from astropy import log
-from astropy.logger import LoggingError, conf
+from astropy.logger import _WITHIN_IPYTHON, LoggingError, conf
 from astropy.utils.exceptions import AstropyUserWarning, AstropyWarning
 
 # Save original values of hooks. These are not the system values, but the
@@ -17,11 +17,6 @@ from astropy.utils.exceptions import AstropyUserWarning, AstropyWarning
 # this file gets executed.
 _excepthook = sys.__excepthook__
 _showwarning = warnings.showwarning
-
-try:
-    ip = get_ipython()
-except NameError:
-    ip = None
 
 
 def setup_function(function):
@@ -78,18 +73,6 @@ def test_warnings_logging():
     assert len(log_list) == 0
     assert len(warn_list) == 1
 
-    # With warnings logging
-    with warnings.catch_warnings(record=True) as warn_list:
-        log.enable_warnings_logging()
-        with log.log_to_list() as log_list:
-            warnings.warn("This is a warning", AstropyUserWarning)
-        log.disable_warnings_logging()
-    assert len(log_list) == 1
-    assert len(warn_list) == 0
-    assert log_list[0].levelname == "WARNING"
-    assert log_list[0].message.startswith("This is a warning")
-    assert log_list[0].origin == "astropy.tests.test_logger"
-
     # With warnings logging (differentiate between Astropy and non-Astropy)
     with pytest.warns(
         UserWarning, match="This is another warning, not from Astropy"
@@ -118,13 +101,16 @@ def test_warnings_logging_with_custom_class():
         pass
 
     # With warnings logging
-    with warnings.catch_warnings(record=True) as warn_list:
+    with pytest.warns(
+        UserWarning, match="This is another warning, not from Astropy"
+    ) as warn_list:
         log.enable_warnings_logging()
         with log.log_to_list() as log_list:
             warnings.warn("This is a warning", CustomAstropyWarningClass)
+            warnings.warn("This is another warning, not from Astropy")
         log.disable_warnings_logging()
     assert len(log_list) == 1
-    assert len(warn_list) == 0
+    assert len(warn_list) == 1
     assert log_list[0].levelname == "WARNING"
     assert log_list[0].message.startswith(
         "CustomAstropyWarningClass: This is a warning"
@@ -135,13 +121,16 @@ def test_warnings_logging_with_custom_class():
 def test_warning_logging_with_io_votable_warning():
     from astropy.io.votable.exceptions import W02, vo_warn
 
-    with warnings.catch_warnings(record=True) as warn_list:
+    with pytest.warns(
+        UserWarning, match="This is another warning, not from Astropy"
+    ) as warn_list:
         log.enable_warnings_logging()
         with log.log_to_list() as log_list:
             vo_warn(W02, ("a", "b"))
+            warnings.warn("This is another warning, not from Astropy")
         log.disable_warnings_logging()
     assert len(log_list) == 1
-    assert len(warn_list) == 0
+    assert len(warn_list) == 1
     assert log_list[0].levelname == "WARNING"
     x = log_list[0].message.startswith(
         "W02: ?:?:?: W02: a attribute 'b' is invalid.  Must be a standard XML id"
@@ -190,7 +179,7 @@ def test_exception_logging_enable_twice():
 
 
 @pytest.mark.skipif(
-    ip is not None, reason="Cannot override exception handler in IPython"
+    _WITHIN_IPYTHON, reason="Cannot override exception handler in IPython"
 )
 def test_exception_logging_overridden():
     log.enable_exception_logging()
@@ -205,7 +194,7 @@ def test_exception_logging_overridden():
         log.disable_exception_logging()
 
 
-@pytest.mark.xfail("ip is not None")
+@pytest.mark.xfail("_WITHIN_IPYTHON")
 def test_exception_logging():
     # Without exception logging
     with pytest.raises(Exception, match="This is an Exception"):
@@ -243,7 +232,7 @@ def test_exception_logging():
     assert len(log_list) == 0
 
 
-@pytest.mark.xfail("ip is not None")
+@pytest.mark.xfail("_WITHIN_IPYTHON")
 def test_exception_logging_origin():
     # The point here is to get an exception raised from another location
     # and make sure the error's origin is reported correctly

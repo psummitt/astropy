@@ -40,9 +40,9 @@ from astropy.coordinates import (
     get_body,
     get_sun,
 )
-from astropy.coordinates.sites import get_builtin_sites
+from astropy.coordinates.sites import _GREENWICH
 from astropy.table import Table
-from astropy.tests.helper import PYTEST_LT_8_0, assert_quantity_allclose
+from astropy.tests.helper import assert_quantity_allclose
 from astropy.time import Time
 from astropy.units import allclose as quantity_allclose
 from astropy.utils import iers
@@ -252,16 +252,15 @@ def test_regression_futuretimes_4302():
     else:
         ctx1 = nullcontext()
 
-    if PYTEST_LT_8_0:
-        ctx2 = ctx3 = nullcontext()
-    else:
-        ctx2 = pytest.warns(ErfaWarning, match=".*dubious year.*")
-        ctx3 = pytest.warns(AstropyWarning, match=".*times after IERS data is valid.*")
-
-    with ctx1, ctx2, ctx3:
+    with (
+        ctx1,
+        pytest.warns(ErfaWarning, match=".*dubious year.*"),
+        pytest.warns(AstropyWarning, match=".*times after IERS data is valid.*"),
+    ):
         future_time = Time("2511-5-1")
         c = CIRS(1 * u.deg, 2 * u.deg, obstime=future_time)
-        c.transform_to(ITRS(obstime=future_time))
+        with iers.conf.set_temp("auto_max_age", None):
+            c.transform_to(ITRS(obstime=future_time))
 
 
 def test_regression_4996():
@@ -317,9 +316,9 @@ def test_regression_4293():
 
 def test_regression_4926():
     times = Time("2010-01-1") + np.arange(20) * u.day
-    green = get_builtin_sites()["greenwich"]
+
     # this is the regression test
-    moon = get_body("moon", times, green)
+    moon = get_body("moon", times, _GREENWICH)
 
     # this is an additional test to make sure the GCRS->ICRS transform works for complex shapes
     moon.transform_to(ICRS())
@@ -448,11 +447,8 @@ def test_regression_5743():
 
 def test_regression_5889_5890():
     # ensure we can represent all Representations and transform to ND frames
-    greenwich = EarthLocation(
-        *u.Quantity([3980608.90246817, -102.47522911, 4966861.27310067], unit=u.m)
-    )
     times = Time("2017-03-20T12:00:00") + np.linspace(-2, 2, 3) * u.hour
-    moon = get_body("moon", times, location=greenwich)
+    moon = get_body("moon", times, location=_GREENWICH)
     targets = SkyCoord([350.7 * u.deg, 260.7 * u.deg], [18.4 * u.deg, 22.4 * u.deg])
     targs2d = targets[:, np.newaxis]
     targs2d.transform_to(moon)
@@ -467,7 +463,7 @@ def test_regression_6236():
 
     class MySpecialFrame(MyFrame):
         def __init__(self, *args, **kwargs):
-            _rep_kwarg = kwargs.get("representation_type", None)
+            _rep_kwarg = kwargs.get("representation_type")
             super().__init__(*args, **kwargs)
             if not _rep_kwarg:
                 self.representation_type = self.default_representation
@@ -514,44 +510,6 @@ def test_regression_6236():
     assert msf3.representation_type is UnitSphericalRepresentation
     assert msf4.representation_type is CartesianRepresentation
     assert msf4.my_attr == msf3.my_attr
-
-
-@pytest.mark.skipif(not HAS_SCIPY, reason="No Scipy")
-def test_regression_6347():
-    sc1 = SkyCoord([1, 2] * u.deg, [3, 4] * u.deg)
-    sc2 = SkyCoord([1.1, 2.1] * u.deg, [3.1, 4.1] * u.deg)
-    sc0 = sc1[:0]
-
-    idx1_10, idx2_10, d2d_10, d3d_10 = sc1.search_around_sky(sc2, 10 * u.arcmin)
-    idx1_1, idx2_1, d2d_1, d3d_1 = sc1.search_around_sky(sc2, 1 * u.arcmin)
-    idx1_0, idx2_0, d2d_0, d3d_0 = sc0.search_around_sky(sc2, 10 * u.arcmin)
-
-    assert len(d2d_10) == 2
-
-    assert len(d2d_0) == 0
-    assert type(d2d_0) is type(d2d_10)
-
-    assert len(d2d_1) == 0
-    assert type(d2d_1) is type(d2d_10)
-
-
-@pytest.mark.skipif(not HAS_SCIPY, reason="No Scipy")
-def test_regression_6347_3d():
-    sc1 = SkyCoord([1, 2] * u.deg, [3, 4] * u.deg, [5, 6] * u.kpc)
-    sc2 = SkyCoord([1, 2] * u.deg, [3, 4] * u.deg, [5.1, 6.1] * u.kpc)
-    sc0 = sc1[:0]
-
-    idx1_10, idx2_10, d2d_10, d3d_10 = sc1.search_around_3d(sc2, 500 * u.pc)
-    idx1_1, idx2_1, d2d_1, d3d_1 = sc1.search_around_3d(sc2, 50 * u.pc)
-    idx1_0, idx2_0, d2d_0, d3d_0 = sc0.search_around_3d(sc2, 500 * u.pc)
-
-    assert len(d2d_10) > 0
-
-    assert len(d2d_0) == 0
-    assert type(d2d_0) is type(d2d_10)
-
-    assert len(d2d_1) == 0
-    assert type(d2d_1) is type(d2d_10)
 
 
 def test_gcrs_itrs_cartesian_repr():
@@ -727,7 +685,7 @@ def test_regression_10422(mjd):
     size=1 non-scalar Time.
     """
     # Avoid trying to download new IERS data.
-    with iers.earth_orientation_table.set(iers.IERS_B.open(iers.IERS_B_FILE)):
+    with iers.conf.set_temp("auto_max_age", None):
         t = Time(mjd, format="mjd", scale="tai")
         loc = EarthLocation(88258.0 * u.m, -4924882.2 * u.m, 3943729.0 * u.m)
         p, v = loc.get_gcrs_posvel(obstime=t)
@@ -750,3 +708,50 @@ def test_regression_10291():
     assert_quantity_allclose(
         venus.separation(sun), 554.427 * u.arcsecond, atol=0.001 * u.arcsecond
     )
+
+
+@pytest.mark.parametrize("coord_cls", [ICRS, SkyCoord])
+@pytest.mark.parametrize(
+    "differential_type, diff_kwargs",
+    [
+        (None, {}),
+        (
+            "unitsphericalcoslat",
+            {
+                "pm_ra_cosdec": [40, 50] * u.mas / u.yr,
+                "pm_dec": [60, 70] * u.mas / u.yr,
+            },
+        ),
+        ("radial", {"radial_velocity": [80, 90] * u.km / u.s}),
+    ],
+)
+@pytest.mark.parametrize("extra_kwargs", [{}, {"representation_type": "unitspherical"}])
+def test_regression_16998(coord_cls, differential_type, diff_kwargs, extra_kwargs):
+    """Direct tests of the underlying problem causing gh-16998.
+
+    Note that the issue itself was of columns missing in data written to a file.
+    That is now tested directly by the "icrs" column in
+    astropy/io/tests/mixin_columns.py.
+    Here, we test the underlying problem, that .info._represent_as_dict()
+    did not return a full set of columns in some cases.
+    """
+    if extra_kwargs and differential_type:
+        extra_kwargs["differential_type"] = differential_type
+    coord = coord_cls([0, 10] * u.deg, [20, 30] * u.deg, **diff_kwargs, **extra_kwargs)
+    expected_entries = {"ra", "dec", "representation_type"}
+    if differential_type:
+        expected_entries |= {"differential_type"} | set(diff_kwargs)
+    if coord_cls is SkyCoord:
+        expected_entries.add("frame")
+    assert set(coord.info._represent_as_dict()) == expected_entries
+
+
+def test_regression_17008():
+    """Test that one can transform a SkyCoord with empty data to other frames.
+
+    The underlying bug that caused the problem reported in gh-17008
+    is tested in utils/iers/tests/test_iers.py::test_empty_mjd
+    """
+    s = SkyCoord([] * u.deg, [] * u.deg, obstime=Time([], format="iso"))
+    itrs = s.itrs  # This failed before.
+    assert itrs.size == 0

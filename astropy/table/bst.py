@@ -1,5 +1,11 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 import operator
+from collections.abc import Hashable, Mapping, Sequence
+from numbers import Integral
+
+import numpy as np
+
+from astropy.utils.decorators import deprecated
 
 __all__ = ["BST"]
 
@@ -24,6 +30,12 @@ class MaxValue:
 
     def __repr__(self):
         return "MAX"
+
+    def to_value(self, unit):
+        """Convert to a value of the given unit."""
+        # This is needed to support Quantity comparisons, in particular
+        # Quantity.searchsorted(MAX).
+        return np.float64(np.inf)
 
     __str__ = __repr__
 
@@ -107,7 +119,7 @@ class Node:
     __ge__ = lambda x, y: x.key >= y.key
     __gt__ = lambda x, y: x.key > y.key
     __ne__ = lambda x, y: x.key != y.key
-    __slots__ = ("key", "data", "left", "right")
+    __slots__ = ("data", "key", "left", "right")
 
     # each node has a key and data list
     def __init__(self, key, data):
@@ -147,6 +159,10 @@ class Node:
         return str(self)
 
 
+@deprecated(
+    since="8.1",
+    alternative="SortedArray (the default engine) or SCEngine",
+)
 class BST:
     """
     A basic binary search tree in pure Python, used
@@ -172,11 +188,12 @@ class BST:
         for key, row in zip(data, row_index):
             self.add(tuple(key), row)
 
-    def add(self, key, data=None):
+    def add(self, key: tuple, data: int | None = None) -> None:
         """
         Add a key, data pair.
         """
         if data is None:
+            # nothing about this branch conforms to the IndexEngine protocol
             data = key
 
         self.size += 1
@@ -203,7 +220,7 @@ class BST:
                 curr_node.data = sorted(curr_node.data)
                 return
 
-    def find(self, key):
+    def find(self, key: tuple) -> Sequence[Integral]:
         """
         Return all data values corresponding to a given key.
 
@@ -228,14 +245,14 @@ class BST:
             return (None, None)
         return self._find_recursive(key, self.root, None)
 
-    def shift_left(self, row):
+    def shift_left(self, row: int) -> None:
         """
         Decrement all rows larger than the given row.
         """
         for node in self.traverse():
             node.data = [x - 1 if x > row else x for x in node.data]
 
-    def shift_right(self, row):
+    def shift_right(self, row: int) -> None:
         """
         Increment all rows greater than or equal to the given row.
         """
@@ -278,13 +295,13 @@ class BST:
             return self._postorder(self.root, [])
         raise ValueError(f'Invalid traversal method: "{order}"')
 
-    def items(self):
+    def items(self) -> list[tuple[Hashable, list[Integral]]]:
         """
         Return BST items in order as (key, data) pairs.
         """
         return [(x.key, x.data) for x in self.traverse()]
 
-    def sort(self):
+    def sort(self) -> None:
         """
         Make row order align with key order.
         """
@@ -294,7 +311,7 @@ class BST:
             node.data = list(range(i, i + num_rows))
             i += num_rows
 
-    def sorted_data(self):
+    def sorted_data(self) -> None:
         """
         Return BST rows sorted by key values.
         """
@@ -330,7 +347,7 @@ class BST:
         else:
             parent.replace(node, new_node)
 
-    def remove(self, key, data=None):
+    def remove(self, key: tuple, data: int | None = None) -> bool:
         """
         Remove data corresponding to the given key.
 
@@ -374,13 +391,13 @@ class BST:
         self.size -= 1
         return True
 
-    def is_valid(self):
+    def is_valid(self) -> bool:
         """
         Returns whether this is a valid BST.
         """
         return self._is_valid(self.root)
 
-    def _is_valid(self, node):
+    def _is_valid(self, node) -> bool:
         if node is None:
             return True
         return (
@@ -390,22 +407,31 @@ class BST:
             and self._is_valid(node.right)
         )
 
-    def range(self, lower, upper, bounds=(True, True)):
+    def range(
+        self,
+        lower: tuple[Hashable, ...] | None,
+        upper: tuple[Hashable, ...] | None,
+        bounds: tuple[bool, bool] = (True, True),
+    ) -> list[int]:
         """
         Return all nodes with keys in the given range.
 
         Parameters
         ----------
-        lower : tuple
-            Lower bound
-        upper : tuple
-            Upper bound
+        lower : tuple, None
+            Lower bound (no lower bound if None)
+        upper : tuple, None
+            Upper bound (no upper bound if None)
         bounds : (2,) tuple of bool
             Indicates whether the search should be inclusive or
             exclusive with respect to the endpoints. The first
             argument corresponds to an inclusive lower bound,
             and the second argument to an inclusive upper bound.
         """
+        if lower is None:
+            lower = (MinValue(),)
+        if upper is None:
+            upper = (MaxValue(),)
         nodes = self.range_nodes(lower, upper, bounds)
         return [x for node in nodes for x in node.data]
 
@@ -431,22 +457,26 @@ class BST:
         return [x for node in nodes for x in node.data]
 
     def _range(self, lower, upper, op1, op2, node, lst):
+        # In-order traversal (left, node, right) so that matching nodes
+        # are collected in ascending key order.
+        if lower < node.key and node.left is not None:
+            self._range(lower, upper, op1, op2, node.left, lst)
         if op1(lower, node.key) and op2(upper, node.key):
             lst.append(node)
         if upper > node.key and node.right is not None:
             self._range(lower, upper, op1, op2, node.right, lst)
-        if lower < node.key and node.left is not None:
-            self._range(lower, upper, op1, op2, node.left, lst)
         return lst
 
     def _same_prefix(self, val, node, lst):
+        # In-order traversal (left, node, right) so that matching nodes
+        # are collected in ascending key order.
         prefix = node.key[: len(val)]
+        if prefix >= val and node.left is not None:
+            self._same_prefix(val, node.left, lst)
         if prefix == val:
             lst.append(node)
         if prefix <= val and node.right is not None:
             self._same_prefix(val, node.right, lst)
-        if prefix >= val and node.left is not None:
-            self._same_prefix(val, node.left, lst)
         return lst
 
     def __repr__(self):
@@ -472,7 +502,7 @@ class BST:
             return -1
         return max(self._height(node.left), self._height(node.right)) + 1
 
-    def replace_rows(self, row_map):
+    def replace_rows(self, row_map: "Mapping[int, int]") -> None:
         """
         Replace all rows with the values they map to in the
         given dictionary. Any rows not present as keys in

@@ -3,6 +3,9 @@
 #include "astropy_wcs/wcslib_celprm_wrap.h"
 #include "astropy_wcs/wcslib_prjprm_wrap.h"
 
+#include <stdlib.h> // calloc, malloc, free
+#include <string.h> // memcpy
+
 #include <wcs.h>
 #include <wcsprintf.h>
 #include <cel.h>
@@ -38,7 +41,7 @@ static int wcslib_cel_to_python_exc(int status)
 }
 
 
-static int is_readonly(PyCelprm* self)
+static int is_readonly(Celprm* self)
 {
     if (self != NULL && self->owner != NULL) {
         PyErr_SetString(
@@ -51,7 +54,7 @@ static int is_readonly(PyCelprm* self)
 }
 
 
-static int is_cel_null(PyCelprm* self)
+static int is_cel_null(Celprm* self)
 {
     if (self->x == NULL) {
         PyErr_SetString(
@@ -65,13 +68,14 @@ static int is_cel_null(PyCelprm* self)
 
 
 /***************************************************************************
- * PyCelprm methods                                                        *
+ * Celprm methods                                                        *
  ***************************************************************************/
 
-static PyObject* PyCelprm_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
+static PyObject* Celprm_new(PyTypeObject* type, PyObject* args, PyObject* kwds)
 {
-    PyCelprm* self;
-    self = (PyCelprm*)type->tp_alloc(type, 0);
+    Celprm* self;
+    allocfunc alloc_func = PyType_GetSlot(type, Py_tp_alloc);
+    self = (Celprm*)alloc_func(type, 0);
     if (self == NULL) return NULL;
     self->owner = NULL;
     self->prefcount = NULL;
@@ -97,33 +101,37 @@ static PyObject* PyCelprm_new(PyTypeObject* type, PyObject* args, PyObject* kwds
 }
 
 
-static int PyCelprm_traverse(PyCelprm* self, visitproc visit, void *arg)
+static int Celprm_traverse(Celprm* self, visitproc visit, void *arg)
 {
     Py_VISIT(self->owner);
+    Py_VISIT((PyObject*)Py_TYPE((PyObject*)self));
     return 0;
 }
 
 
-static int PyCelprm_clear(PyCelprm* self)
+static int Celprm_clear(Celprm* self)
 {
     Py_CLEAR(self->owner);
     return 0;
 }
 
 
-static void PyCelprm_dealloc(PyCelprm* self)
+static void Celprm_dealloc(Celprm* self)
 {
-    PyCelprm_clear(self);
+    Celprm_clear(self);
     wcslib_cel_to_python_exc(celfree(self->x)); // free memory used for err msg
     if (self->prefcount && (--(*self->prefcount)) == 0) {
         free(self->x);
         free(self->prefcount);
     }
-    Py_TYPE(self)->tp_free((PyObject*)self);
+    PyTypeObject *tp = Py_TYPE((PyObject*)self);
+    freefunc free_func = PyType_GetSlot(tp, Py_tp_free);
+    free_func((PyObject*)self);
+    Py_DECREF(tp);
 }
 
 
-static int PyCelprm_cset(PyCelprm* self)
+static int Celprm_cset(Celprm* self)
 {
     if (wcslib_cel_to_python_exc(celset(self->x))) {
         return -1;
@@ -132,17 +140,19 @@ static int PyCelprm_cset(PyCelprm* self)
 }
 
 
-static PyObject* PyCelprm_set(PyCelprm* self)
+static PyObject* Celprm_set(Celprm* self)
 {
-    if (is_readonly(self) || PyCelprm_cset(self)) return NULL;
+    if (is_readonly(self) || Celprm_cset(self)) return NULL;
     Py_RETURN_NONE;
 }
 
 
-PyCelprm* PyCelprm_cnew(PyObject* wcsprm_obj, struct celprm* x, int* prefcount)
+Celprm* Celprm_cnew(PyObject* wcsprm_obj, struct celprm* x, int* prefcount)
 {
-    PyCelprm* self;
-    self = (PyCelprm*)(&PyCelprmType)->tp_alloc(&PyCelprmType, 0);
+    Celprm* self;
+    PyTypeObject* type = (PyTypeObject*)CelprmType;
+    allocfunc alloc_func = PyType_GetSlot(type, Py_tp_alloc);
+    self = (Celprm*)alloc_func(type, 0);
     if (self == NULL) return NULL;
     self->x = x;
     Py_XINCREF(wcsprm_obj);
@@ -153,18 +163,18 @@ PyCelprm* PyCelprm_cnew(PyObject* wcsprm_obj, struct celprm* x, int* prefcount)
 }
 
 
-static PyObject* PyCelprm_copy(PyCelprm* self)
+static PyObject* Celprm_copy(Celprm* self)
 {
-    PyCelprm* copy = NULL;
-    copy = PyCelprm_cnew(self->owner, self->x, self->prefcount);
+    Celprm* copy = NULL;
+    copy = Celprm_cnew(self->owner, self->x, self->prefcount);
     if (copy == NULL) return NULL;
     return (PyObject*)copy;
 }
 
 
-static PyObject* PyCelprm_deepcopy(PyCelprm* self)
+static PyObject* Celprm_deepcopy(Celprm* self)
 {
-    PyCelprm* copy = PyCelprm_new(&PyCelprmType, NULL, NULL);
+    Celprm* copy = (Celprm*) Celprm_new((PyTypeObject*)CelprmType, NULL, NULL);
     if (copy == NULL) return NULL;
 
     memcpy(copy->x, self->x, sizeof(struct celprm));
@@ -173,8 +183,8 @@ static PyObject* PyCelprm_deepcopy(PyCelprm* self)
 }
 
 
-static PyObject* PyCelprm___str__(PyCelprm* self) {
-    /* if (PyCelprm_cset(self)) return NULL; */
+static PyObject* Celprm___str__(Celprm* self) {
+    /* if (Celprm_cset(self)) return NULL; */
     /* This is not thread-safe, but since we're holding onto the GIL,
        we can assume we won't have thread conflicts */
     wcsprintf_set(NULL);
@@ -190,7 +200,7 @@ static PyObject* PyCelprm___str__(PyCelprm* self) {
  */
 
 
-static PyObject* PyCelprm_get_flag(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_flag(Celprm* self, void* closure)
 {
     if (is_cel_null(self)) {
         return NULL;
@@ -199,7 +209,7 @@ static PyObject* PyCelprm_get_flag(PyCelprm* self, void* closure)
     }
 }
 
-static PyObject* PyCelprm_get_offset(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_offset(Celprm* self, void* closure)
 {
     if (is_cel_null(self)) {
         return NULL;
@@ -209,7 +219,7 @@ static PyObject* PyCelprm_get_offset(PyCelprm* self, void* closure)
 }
 
 
-static int PyCelprm_set_offset(PyCelprm* self, PyObject* value, void* closure)
+static int Celprm_set_offset(Celprm* self, PyObject* value, void* closure)
 {
     if (is_cel_null(self) || is_readonly(self)) {
         return -1;
@@ -222,7 +232,7 @@ static int PyCelprm_set_offset(PyCelprm* self, PyObject* value, void* closure)
 }
 
 
-static PyObject* PyCelprm_get_phi0(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_phi0(Celprm* self, void* closure)
 {
     if (is_cel_null(self)) {
         return NULL;
@@ -233,7 +243,7 @@ static PyObject* PyCelprm_get_phi0(PyCelprm* self, void* closure)
 }
 
 
-static int PyCelprm_set_phi0(PyCelprm* self, PyObject* value, void* closure)
+static int Celprm_set_phi0(Celprm* self, PyObject* value, void* closure)
 {
     int result;
     double phi0;
@@ -257,7 +267,7 @@ static int PyCelprm_set_phi0(PyCelprm* self, PyObject* value, void* closure)
 }
 
 
-static PyObject* PyCelprm_get_theta0(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_theta0(Celprm* self, void* closure)
 {
     if (is_cel_null(self)) {
         return NULL;
@@ -268,7 +278,7 @@ static PyObject* PyCelprm_get_theta0(PyCelprm* self, void* closure)
 }
 
 
-static int PyCelprm_set_theta0(PyCelprm* self, PyObject* value, void* closure)
+static int Celprm_set_theta0(Celprm* self, PyObject* value, void* closure)
 {
     int result;
     double theta0;
@@ -291,7 +301,7 @@ static int PyCelprm_set_theta0(PyCelprm* self, PyObject* value, void* closure)
 }
 
 
-static PyObject* PyCelprm_get_ref(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_ref(Celprm* self, void* closure)
 {
     Py_ssize_t size = 4;
     if (is_cel_null(self)) {
@@ -302,7 +312,7 @@ static PyObject* PyCelprm_get_ref(PyCelprm* self, void* closure)
 }
 
 
-static int PyCelprm_set_ref(PyCelprm* self, PyObject* value, void* closure)
+static int Celprm_set_ref(Celprm* self, PyObject* value, void* closure)
 {
     int i;
     int skip[4] = {0, 0, 0, 0};
@@ -321,7 +331,7 @@ static int PyCelprm_set_ref(PyCelprm* self, PyObject* value, void* closure)
         return 0;
     }
 
-    PyObject* value_array = PyArray_ContiguousFromAny(value, NPY_DOUBLE, 1, 1);
+    PyArrayObject* value_array = (PyArrayObject*) PyArray_ContiguousFromAny(value, NPY_DOUBLE, 1, 1);
     if (!value_array) return -1;
 
     size = PyArray_SIZE(value_array);
@@ -365,14 +375,14 @@ static int PyCelprm_set_ref(PyCelprm* self, PyObject* value, void* closure)
 }
 
 
-static PyObject* PyCelprm_get_prj(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_prj(Celprm* self, void* closure)
 {
     if (is_cel_null(self)) return NULL;
-    return (PyObject*)PyPrjprm_cnew((PyObject *)self, &(self->x->prj), NULL);
+    return (PyObject*)Prjprm_cnew((PyObject *)self, &(self->x->prj), NULL);
 }
 
 
-static PyObject* PyCelprm_get_euler(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_euler(Celprm* self, void* closure)
 {
     Py_ssize_t size = 5;
     if (is_cel_null(self)) return NULL;
@@ -380,14 +390,14 @@ static PyObject* PyCelprm_get_euler(PyCelprm* self, void* closure)
 }
 
 
-static PyObject* PyCelprm_get_latpreq(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_latpreq(Celprm* self, void* closure)
 {
     if (is_cel_null(self)) return NULL;
     return get_int("lapreq", self->x->latpreq);
 }
 
 
-static PyObject* PyCelprm_get_isolat(PyCelprm* self, void* closure)
+static PyObject* Celprm_get_isolat(Celprm* self, void* closure)
 {
     if (is_cel_null(self)) {
         return NULL;
@@ -398,78 +408,55 @@ static PyObject* PyCelprm_get_isolat(PyCelprm* self, void* closure)
 
 
 /***************************************************************************
- * PyCelprm definition structures
+ * Celprm definition structures
  */
 
-static PyGetSetDef PyCelprm_getset[] = {
-    {"offset", (getter)PyCelprm_get_offset, (setter)PyCelprm_set_offset, (char *)doc_cel_offset},
-    {"phi0", (getter)PyCelprm_get_phi0, (setter)PyCelprm_set_phi0, (char *)doc_celprm_phi0},
-    {"theta0", (getter)PyCelprm_get_theta0, (setter)PyCelprm_set_theta0, (char *)doc_celprm_theta0},
-    {"ref", (getter)PyCelprm_get_ref, (setter)PyCelprm_set_ref, (char *)doc_celprm_ref},
-    {"euler", (getter)PyCelprm_get_euler, NULL, (char *)doc_celprm_euler},
-    {"latpreq", (getter)PyCelprm_get_latpreq, NULL, (char *)doc_celprm_latpreq},
-    {"isolat", (getter)PyCelprm_get_isolat, NULL, (char *)doc_celprm_isolat},
-    {"_flag", (getter)PyCelprm_get_flag, NULL, ""},
-    {"prj", (getter)PyCelprm_get_prj, NULL, (char *)doc_celprm_prj},
+static PyGetSetDef Celprm_getset[] = {
+    {"offset", (getter)Celprm_get_offset, (setter)Celprm_set_offset, (char *)doc_cel_offset},
+    {"phi0", (getter)Celprm_get_phi0, (setter)Celprm_set_phi0, (char *)doc_celprm_phi0},
+    {"theta0", (getter)Celprm_get_theta0, (setter)Celprm_set_theta0, (char *)doc_celprm_theta0},
+    {"ref", (getter)Celprm_get_ref, (setter)Celprm_set_ref, (char *)doc_celprm_ref},
+    {"euler", (getter)Celprm_get_euler, NULL, (char *)doc_celprm_euler},
+    {"latpreq", (getter)Celprm_get_latpreq, NULL, (char *)doc_celprm_latpreq},
+    {"isolat", (getter)Celprm_get_isolat, NULL, (char *)doc_celprm_isolat},
+    {"_flag", (getter)Celprm_get_flag, NULL, ""},
+    {"prj", (getter)Celprm_get_prj, NULL, (char *)doc_celprm_prj},
     {NULL}
 };
 
 
-static PyMethodDef PyCelprm_methods[] = {
-    {"set", (PyCFunction)PyCelprm_set, METH_NOARGS, doc_set_celprm},
-    {"__copy__", (PyCFunction)PyCelprm_copy, METH_NOARGS, ""},
-    {"__deepcopy__", (PyCFunction)PyCelprm_deepcopy, METH_O, ""},
+static PyMethodDef Celprm_methods[] = {
+    {"set", (PyCFunction)Celprm_set, METH_NOARGS, doc_set_celprm},
+    {"__copy__", (PyCFunction)Celprm_copy, METH_NOARGS, ""},
+    {"__deepcopy__", (PyCFunction)Celprm_deepcopy, METH_O, ""},
     {NULL}
 };
 
-
-PyTypeObject PyCelprmType = {
-    PyVarObject_HEAD_INIT(NULL, 0)
-    "astropy.wcs.Celprm",         /*tp_name*/
-    sizeof(PyCelprm),             /*tp_basicsize*/
-    0,                            /*tp_itemsize*/
-    (destructor)PyCelprm_dealloc, /*tp_dealloc*/
-    0,                            /*tp_print*/
-    0,                            /*tp_getattr*/
-    0,                            /*tp_setattr*/
-    0,                            /*tp_compare*/
-    0,                            /*tp_repr*/
-    0,                            /*tp_as_number*/
-    0,                            /*tp_as_sequence*/
-    0,                            /*tp_as_mapping*/
-    0,                            /*tp_hash */
-    0,                            /*tp_call*/
-    (reprfunc)PyCelprm___str__,   /*tp_str*/
-    0,                            /*tp_getattro*/
-    0,                            /*tp_setattro*/
-    0,                            /*tp_as_buffer*/
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-    doc_Celprm,                   /* tp_doc */
-    (traverseproc)PyCelprm_traverse, /* tp_traverse */
-    (inquiry)PyCelprm_clear,      /* tp_clear */
-    0,                            /* tp_richcompare */
-    0,                            /* tp_weaklistoffset */
-    0,                            /* tp_iter */
-    0,                            /* tp_iternext */
-    PyCelprm_methods,             /* tp_methods */
-    0,                            /* tp_members */
-    PyCelprm_getset,              /* tp_getset */
-    0,                            /* tp_base */
-    0,                            /* tp_dict */
-    0,                            /* tp_descr_get */
-    0,                            /* tp_descr_set */
-    0,                            /* tp_dictoffset */
-    0,                            /* tp_init */
-    0,                            /* tp_alloc */
-    PyCelprm_new,                 /* tp_new */
+static PyType_Spec CelprmType_spec = {
+    .name = "astropy.wcs.Celprm",
+    .basicsize = sizeof(Celprm),
+    .itemsize = 0,
+    .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_IMMUTABLETYPE,
+    .slots = (PyType_Slot[]){
+        {Py_tp_dealloc, (destructor)Celprm_dealloc},
+        {Py_tp_str, (reprfunc)Celprm___str__},
+        {Py_tp_doc, doc_Celprm},
+        {Py_tp_traverse, (traverseproc)Celprm_traverse},
+        {Py_tp_clear, (inquiry)Celprm_clear},
+        {Py_tp_methods, Celprm_methods},
+        {Py_tp_getset, Celprm_getset},
+        {Py_tp_new, Celprm_new},
+        {0, NULL},
+    },
 };
 
+PyObject* CelprmType = NULL;
 
 int _setup_celprm_type(PyObject* m)
 {
-    if (PyType_Ready(&PyCelprmType) < 0) return -1;
-    Py_INCREF(&PyCelprmType);
-    PyModule_AddObject(m, "Celprm", (PyObject *)&PyCelprmType);
+    CelprmType = PyType_FromSpec(&CelprmType_spec);
+    if (CelprmType == NULL) return -1;
+    PyModule_AddObject(m, "Celprm", CelprmType);
 
     cel_errexc[0] = NULL;                         /* Success */
     cel_errexc[1] = &PyExc_MemoryError;           /* Null celprm pointer passed */

@@ -4,7 +4,7 @@ set -euv
 
 # This script should be run every time cfitsio is updated.
 # This moves all the code needed for the actual library to lib
-# and deletes everything else (except License.txt and doc/changes.txt)
+# and deletes everything else (except License.txt and ChangeLog)
 
 # So, the standard update would be to execute, from this directory,
 # rm -rf cfitsio
@@ -22,16 +22,20 @@ mv cfitsio/pliocomp.c cfitsio/lib/
 mv cfitsio/quantize.c cfitsio/lib/
 mv cfitsio/ricecomp.c cfitsio/lib/
 
+rm -f cfitsio/.gitattributes
+rm -f cfitsio/.gitignore
 rm -f cfitsio/README
+rm -f cfitsio/INSTALL
 rm -f cfitsio/configure
 rm -f cfitsio/install-sh
-rm -f cfitsio/docs/*.tex
-rm -f cfitsio/docs/*.ps
-rm -f cfitsio/docs/*.pdf
-rm -f cfitsio/docs/*.doc
-rm -f cfitsio/docs/*.toc
+rm -f cfitsio/run-testprog
+rm -rf cfitsio/.github
+rm -rf cfitsio/docs/
 rm -rf cfitsio/[^L]*.*
-
+rm -rf cfitsio/utilities
+rm -rf cfitsio/cmake
+rm -rf cfitsio/config
+rm -rf cfitsio/m4
 
 # We only use a very small subset of fitsio2.h, so here we generate that
 # file. If there are compilation issues after updating, it may be that

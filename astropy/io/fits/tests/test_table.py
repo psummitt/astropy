@@ -6,10 +6,10 @@ import gc
 import pickle
 import re
 import sys
+import warnings
 
 import numpy as np
 import pytest
-from numpy import char as chararray
 
 try:
     import objgraph
@@ -24,9 +24,12 @@ from astropy.io.fits.util import decode_ascii
 from astropy.io.fits.verify import VerifyError
 from astropy.table import Table
 from astropy.units import Unit, UnitsWarning, UnrecognizedUnit
-from astropy.utils.exceptions import AstropyUserWarning
+from astropy.utils.compat import get_chararray
+from astropy.utils.exceptions import AstropyDeprecationWarning, AstropyUserWarning
 
 from .conftest import FitsTestCase
+from .test_connect import TestMultipleHDU
+from .test_core import TestCore
 
 
 def comparefloats(a, b):
@@ -154,7 +157,7 @@ class TestTableFunctions(FitsTestCase):
         fd = fits.open(self.data("test0.fits"))
 
         # create some local arrays
-        a1 = chararray.array(["abc", "def", "xx"])
+        a1 = get_chararray(["abc", "def", "xx"])
         r1 = np.array([11.0, 12.0, 13.0], dtype=np.float32)
 
         # create a table from scratch, using a mixture of columns from existing
@@ -285,6 +288,47 @@ class TestTableFunctions(FitsTestCase):
 
         t.close()
 
+    def test_table_header_order(self):
+        # Make sure the table keywords are in the right order and are above other
+        # header keywords
+        table = Table({"col1": ["foo", "bar"], "col2": ["test1", "test2"]})
+        header = fits.Header()
+        header["a"] = "b"
+        header["c"] = "d"
+        table_hdu = fits.BinTableHDU(table, header=header)
+        table_hdu.add_checksum()
+
+        actual_header = table_hdu.header.cards
+
+        expected_header = [
+            ("XTENSION", "BINTABLE", "binary table extension"),
+            ("BITPIX", 8, "array data type"),
+            ("NAXIS", 2, "number of array dimensions"),
+            ("NAXIS1", 8, "length of dimension 1"),
+            ("NAXIS2", 2, "length of dimension 2"),
+            ("PCOUNT", 0, "number of group parameters"),
+            ("GCOUNT", 1, "number of groups"),
+            ("TFIELDS", 2, "number of table fields"),
+            ("TTYPE1", "col1", ""),
+            ("TFORM1", "3A", ""),
+            ("TTYPE2", "col2", ""),
+            ("TFORM2", "5A", ""),
+            ("A", "b", ""),
+            ("C", "d", ""),
+            (
+                "CHECKSUM",
+                "XIamYIUlXIalXIUl",
+                "HDU checksum updated 2026-05-18T16:19:52",
+            ),
+            ("DATASUM", "2478295628", "data unit checksum updated 2026-05-18T16:19:52"),
+        ]
+        for actual, expected in zip(actual_header, expected_header):
+            actual_key, actual_value, _ = actual
+            expected_key, expected_value, _ = expected
+            assert actual_key == expected_key
+            if actual_key != "CHECKSUM":
+                assert actual_value == expected_value
+
     def test_ascii_table(self):
         # ASCII table
         a = fits.open(self.data("ascii.fits"))
@@ -317,7 +361,7 @@ class TestTableFunctions(FitsTestCase):
 
         # Test Start Column
 
-        a1 = chararray.array(["abcd", "def"])
+        a1 = get_chararray(["abcd", "def"])
         r1 = np.array([11.0, 12.0])
         c1 = fits.Column(name="abc", format="A3", start=19, array=a1)
         c2 = fits.Column(name="def", format="E", start=3, array=r1)
@@ -360,6 +404,64 @@ class TestTableFunctions(FitsTestCase):
             assert comparerecords(hdu.data, hdul[1].data)
 
         a.close()
+
+    @pytest.mark.parametrize("mode", ["readonly", "denywrite", "update"])
+    def test_writeto_after_open_modes(self, tmp_path, mode):
+        """Writing a table to a new file must not fail in any open mode, even
+        though scaled (TSCALn/TZEROn), logical (``'L'``) and bit (``'X'``)
+        columns have an on-disk form that differs from their in-memory values.
+        A ``mode='denywrite'`` buffer is read-only, so nothing could have been
+        modified and ``_scale_back`` does not write it back -- this previously
+        raised "assignment destination is read-only".
+        """
+        cols = [
+            fits.Column("plain", "J", array=np.array([10, 20, 30])),
+            fits.Column(
+                "scaled", "E", array=np.array([1.0, 2.0, 3.0]), bscale=2.0, bzero=5.0
+            ),
+            fits.Column("bits", "2X", array=np.array([[1, 0], [0, 1], [1, 1]])),
+            fits.Column("flag", "L", array=np.array([True, False, True])),
+        ]
+        in_path = tmp_path / "in.fits"
+        fits.BinTableHDU.from_columns(cols).writeto(in_path)
+
+        out_path = tmp_path / "out.fits"
+        with fits.open(in_path, mode=mode) as hdul:
+            for name in hdul[1].columns.names:
+                hdul[1].data[name]
+            hdul.writeto(out_path)
+
+        with fits.open(out_path) as hdul:
+            data = hdul[1].data
+            assert data["plain"].tolist() == [10, 20, 30]
+            np.testing.assert_allclose(data["scaled"], [1.0, 2.0, 3.0])
+            assert data["bits"].tolist() == [[True, False], [False, True], [True, True]]
+            assert data["flag"].tolist() == [True, False, True]
+
+    @pytest.mark.parametrize(
+        "fmt, array, kwargs",
+        [
+            ("J", [10, 20, 30], {}),
+            ("E", [1.0, 2.0, 3.0], {"bscale": 2.0, "bzero": 5.0}),
+            ("2X", [[1, 0], [0, 1], [1, 1]], {}),
+            ("L", [True, False, True], {}),
+        ],
+        ids=["int", "scaled", "bits", "logical"],
+    )
+    def test_denywrite_columns_are_readonly(self, tmp_path, fmt, array, kwargs):
+        """A table opened with ``mode='denywrite'`` exposes every column as a
+        read-only array, including scaled / logical / bit columns whose
+        in-memory form is a freshly converted array rather than a view of the
+        raw buffer. An in-place edit therefore raises instead of being silently
+        dropped on write (consistent with plain columns and image data).
+        """
+        in_path = tmp_path / "in.fits"
+        col = fits.Column("c", fmt, array=np.array(array), **kwargs)
+        fits.BinTableHDU.from_columns([col]).writeto(in_path)
+        with fits.open(in_path, mode="denywrite") as hdul:
+            data = hdul[1].data["c"]
+            with pytest.raises(ValueError, match="read-only"):
+                data[0] = data[0]
 
     def test_endianness(self):
         x = np.ndarray((1,), dtype=object)
@@ -556,6 +658,9 @@ class TestTableFunctions(FitsTestCase):
         with fits.open(self.temp("toto.fits")) as hdul:
             assert comparerecords(hdu.data, hdul[1].data)
 
+    @pytest.mark.filterwarnings(
+        "ignore:.*[Cc]olumn '.*' contains NULL:astropy.utils.exceptions.AstropyUserWarning"
+    )
     def test_new_fitsrec(self):
         """
         Tests creating a new FITS_rec object from a multi-field ndarray.
@@ -1031,7 +1136,7 @@ class TestTableFunctions(FitsTestCase):
         """Regression test for https://github.com/astropy/astropy/issues/5280
         and https://github.com/astropy/astropy/issues/5287
 
-        multidimentional tables can now be written with the correct TDIM.
+        multidimensional tables can now be written with the correct TDIM.
         Author: Stephen Bailey.
         """
 
@@ -1119,7 +1224,8 @@ class TestTableFunctions(FitsTestCase):
 
         assert row[1:4]["counts"] == 315
 
-        pytest.raises(KeyError, lambda r: r[1:4]["flag"], row)
+        with pytest.raises(KeyError):
+            row[1:4]["flag"]
 
         row[1:4]["counts"] = 300
         assert row[1:4]["counts"] == 300
@@ -1136,17 +1242,20 @@ class TestTableFunctions(FitsTestCase):
         row[1:4:2][0] = 300
         assert row[1:4]["counts"] == 300
 
-        pytest.raises(KeyError, lambda r: r[1:4]["flag"], row)
+        with pytest.raises(KeyError):
+            row[1:4]["flag"]
 
         assert row[1:4].field(0) == 300
         assert row[1:4].field("counts") == 300
 
-        pytest.raises(KeyError, row[1:4].field, "flag")
+        with pytest.raises(KeyError):
+            row[1:4].field("flag")
 
         row[1:4].setfield("counts", 500)
         assert row[1:4].field(0) == 500
 
-        pytest.raises(KeyError, row[1:4].setfield, "flag", False)
+        with pytest.raises(KeyError):
+            row[1:4].setfield("flag", False)
 
         assert t1[1].data._coldefs._arrays[1][2] == 500
         assert t1[1].data._coldefs.columns[1].array[2] == 500
@@ -1155,6 +1264,81 @@ class TestTableFunctions(FitsTestCase):
         assert t1[1].data[2][1] == 500
 
         t1.close()
+
+    def test_row_setitem(self):
+        tbdata = fits.getdata(self.data("tb.fits"))
+        row = tbdata[0]
+        assert row["c1"] == 1
+        assert row["c2"] == "abc"
+
+        row[0] = 2
+        assert row["c1"] == 2
+        row["c1"] = 3
+        assert row["c1"] == 3
+
+        with pytest.raises(IndexError):
+            row[5] = 2
+
+        row[:2] = (12, "xyz")
+        assert row["c1"] == 12
+        assert row["c2"] == "xyz"
+
+    def test_fitsrec_negative_slice_setitem(self):
+        """Regression test for negative slice assignment in FITS_rec.
+
+        Negative slices like data[-2:] were writing to wrong row indices
+        because negative start/stop values were clamped to 0 instead of
+        being resolved relative to the array length.
+        """
+
+        def _make_data(x=None, y=None):
+            x = x if x is not None else [1.0, 2.0, 3.0, 4.0, 5.0]
+            cols = [fits.Column(name="x", format="D", array=x)]
+            if y is not None:
+                cols.append(fits.Column(name="y", format="J", array=y))
+            return fits.BinTableHDU.from_columns(cols)
+
+        src_data = _make_data(x=[99.0, 88.0], y=[990, 880]).data
+
+        # Test negative start slice: data[-2:]
+        data = _make_data(y=[10, 20, 30, 40, 50]).data
+        data[-2:] = [src_data[0], src_data[1]]
+        assert list(data["x"]) == [1.0, 2.0, 3.0, 99.0, 88.0]
+        assert list(data["y"]) == [10, 20, 30, 990, 880]
+
+        # Test negative start and stop: data[-3:-1]
+        data = _make_data(y=[10, 20, 30, 40, 50]).data
+        data[-3:-1] = [src_data[0], src_data[1]]
+        assert list(data["x"]) == [1.0, 2.0, 99.0, 88.0, 5.0]
+        assert list(data["y"]) == [10, 20, 990, 880, 50]
+
+        # Test positive slice still works
+        data = _make_data().data
+        data[0:2] = [src_data[0], src_data[1]]
+        assert list(data["x"]) == [99.0, 88.0, 3.0, 4.0, 5.0]
+
+        # Test step slice: data[::2]
+        data = _make_data().data
+        data[::2] = [src_data[0], src_data[1], src_data[0]]
+        assert list(data["x"]) == [99.0, 2.0, 88.0, 4.0, 99.0]
+
+        # Test negative step slice: data[::-1]
+        data = _make_data().data
+        reversed_src = _make_data(x=[55.0, 44.0, 33.0, 22.0, 11.0]).data
+        data[::-1] = [reversed_src[i] for i in range(5)]
+        assert list(data["x"]) == [11.0, 22.0, 33.0, 44.0, 55.0]
+
+        # Test round-trip through a FITS file
+        hdu = _make_data()
+        hdu.data[-2:] = [src_data[0], src_data[1]]
+        hdu.writeto(self.temp("test_neg_slice.fits"))
+        saved = fits.getdata(self.temp("test_neg_slice.fits"))
+        assert list(saved["x"]) == [1.0, 2.0, 3.0, 99.0, 88.0]
+
+        # Test that mismatched lengths raise ValueError (like NumPy does)
+        data = _make_data().data
+        with pytest.raises(ValueError):
+            data[-2:] = [src_data[0]]  # slice covers 2 rows but only 1 value given
 
     def test_fits_record_len(self):
         counts = np.array([312, 334, 308, 317])
@@ -1294,7 +1478,7 @@ class TestTableFunctions(FitsTestCase):
         # Assign the 4 rows from the second table to rows 5 thru 8 of the
         # new table.  Note that the last row of the new table will still be
         # initialized to the default values.
-        tbhdu2.data[4:] = tbhdu.data
+        tbhdu2.data[4:8] = tbhdu.data
 
         # Verify that all ndarray objects within the HDU reference the
         # same ndarray.
@@ -1869,8 +2053,8 @@ class TestTableFunctions(FitsTestCase):
         tbdata = fits.getdata(self.data("ascii.fits"))
         for col in ("a", "b"):
             data = getattr(tbdata, col)
-            assert (data == tbdata.field(col)).all()
-            assert (data == tbdata[col]).all()
+            np.testing.assert_array_equal(data, tbdata.field(col))
+            np.testing.assert_array_equal(data, tbdata[col])
 
         # with VLA column
         col1 = fits.Column(
@@ -1887,10 +2071,9 @@ class TestTableFunctions(FitsTestCase):
         hdul = fits.open(self.data("zerowidth.fits"))
         tbhdu = hdul[2]  # This HDU contains a zero-width column 'ORBPARM'
         assert "ORBPARM" in tbhdu.columns.names
-        # The ORBPARM column should not be in the data, though the data should
-        # be readable
         assert "ORBPARM" in tbhdu.data.names
         assert "ORBPARM" in tbhdu.data.dtype.names
+        assert tbhdu.data["ORBPARM"].shape == (29, 0)
         # Verify that some of the data columns are still correctly accessible
         # by name
         assert tbhdu.data[0]["ANNAME"] == "VLA:_W16"
@@ -1915,6 +2098,7 @@ class TestTableFunctions(FitsTestCase):
         assert "ORBPARM" in tbhdu.columns.names
         assert "ORBPARM" in tbhdu.data.names
         assert "ORBPARM" in tbhdu.data.dtype.names
+        assert tbhdu.data["ORBPARM"].shape == (29, 0)
         assert tbhdu.data[0]["ANNAME"] == "VLA:_W16"
         assert comparefloats(
             tbhdu.data[0]["STABXYZ"],
@@ -1930,6 +2114,17 @@ class TestTableFunctions(FitsTestCase):
         assert tbhdu.data[-1]["MNTSTA"] == 0
         hdul.close()
 
+    def test_table_with_zero_width_str_column(self):
+        data = np.array([("", 12)], dtype=[("a", "S"), ("b", "i4")])
+        thdu = fits.BinTableHDU(data)
+        thdu.writeto(self.temp("zerodtable.fits"))
+
+        with fits.open(self.temp("zerodtable.fits")) as hdul:
+            thdu = hdul[1]
+            assert hdul[1].columns["a"].format == "0A"
+            np.testing.assert_array_equal(hdul[1].data["a"], [""])
+            np.testing.assert_array_equal(hdul[1].data["b"], [12])
+
     def test_string_column_padding(self):
         a = ["img1", "img2", "img3a", "p"]
         s = (
@@ -1939,7 +2134,7 @@ class TestTableFunctions(FitsTestCase):
             "p\x00\x00\x00\x00\x00\x00\x00\x00\x00"
         )
 
-        acol = fits.Column(name="MEMNAME", format="A10", array=chararray.array(a))
+        acol = fits.Column(name="MEMNAME", format="A10", array=get_chararray(a))
         ahdu = fits.BinTableHDU.from_columns([acol])
         assert ahdu.data.tobytes().decode("raw-unicode-escape") == s
         ahdu.writeto(self.temp("newtable.fits"))
@@ -2158,7 +2353,7 @@ class TestTableFunctions(FitsTestCase):
             assert len(h[1].data) == 2
             assert len(h[1].data[0]) == 1
             assert (
-                h[1].data.field(0)[0] == np.char.decode(recarr.field(0)[0], "ascii")
+                h[1].data.field(0)[0] == np.strings.decode(recarr.field(0)[0], "ascii")
             ).all()
 
         with fits.open(self.temp("test.fits")) as h:
@@ -2173,7 +2368,7 @@ class TestTableFunctions(FitsTestCase):
             assert len(h[1].data) == 2
             assert len(h[1].data[0]) == 1
             assert (
-                h[1].data.field(0)[0] == np.char.decode(recarr.field(0)[0], "ascii")
+                h[1].data.field(0)[0] == np.strings.decode(recarr.field(0)[0], "ascii")
             ).all()
 
     def test_new_table_with_nd_column(self):
@@ -2197,8 +2392,14 @@ class TestTableFunctions(FitsTestCase):
         with fits.open(self.temp("test.fits")) as h:
             # Need to force string arrays to byte arrays in order to compare
             # correctly on Python 3
-            assert (h[1].data["str"].encode("ascii") == arra).all()
-            assert (h[1].data["strarray"].encode("ascii") == arrb).all()
+            with pytest.warns(
+                AstropyDeprecationWarning, match="chararray is deprecated.*"
+            ):
+                assert (h[1].data["str"].encode("ascii") == arra).all()
+            with pytest.warns(
+                AstropyDeprecationWarning, match="chararray is deprecated.*"
+            ):
+                assert (h[1].data["strarray"].encode("ascii") == arrb).all()
             assert (h[1].data["intarray"] == arrc).all()
 
     def test_mismatched_tform_and_tdim(self):
@@ -2232,9 +2433,8 @@ class TestTableFunctions(FitsTestCase):
 
         # If dims is more than the repeat count in the format specifier raise
         # an error
-        pytest.raises(
-            VerifyError, fits.Column, name="a", format="2I", dim="(2,2)", array=arra
-        )
+        with pytest.raises(VerifyError):
+            fits.Column(name="a", format="2I", dim="(2,2)", array=arra)
 
     def test_tdim_of_size_one(self):
         """Regression test for https://github.com/astropy/astropy/pull/3580"""
@@ -2465,6 +2665,341 @@ class TestTableFunctions(FitsTestCase):
             assert (hdul[1].data["F1"] == [True, True]).all()
             assert (hdul[1].data["F2"] == [True, True]).all()
 
+    def test_logical_vla_bool_round_trip(self, tmp_path):
+        """Regression test for https://github.com/astropy/astropy/issues/18755.
+
+        Variable-length array (VLA) columns of FITS logical type
+        ('PL'/'QL') previously stored bool input as 1/0 bytes (not the
+        FITS L wire format ord('T') / ord('F')) and exposed read-back
+        values as raw int8 (84/70) rather than bool.
+        """
+        col = fits.Column(
+            name="flag",
+            format="PL()",
+            array=[
+                np.array([True, False, True]),
+                np.array([False, True]),
+            ],
+        )
+        out_path = tmp_path / "vla_bool.fits"
+        fits.BinTableHDU.from_columns([col]).writeto(out_path)
+
+        with fits.open(out_path) as hdul:
+            data = hdul[1].data["flag"]
+            assert data[0].dtype == bool
+            assert list(data[0]) == [True, False, True]
+            assert list(data[1]) == [False, True]
+            heap = hdul[1].data._get_heap_data()
+            assert bytes(heap[:5]) == b"TFTFT"
+
+    def test_logical_vla_legacy_file_compat(self):
+        """Backwards compatibility for logical VLA files written by
+        astropy <= 7.2.0 (heap encoded as 0x00/0x01 bytes rather than the
+        FITS L wire format 'T'/'F').
+        """
+        # The data file used here was generated with astropy prior to
+        # the fix using the following code (run against commit 0b44f93,
+        # the immediate parent of the fix commit):
+        #
+        #     import numpy as np
+        #     from astropy.io import fits
+        #
+        #     col = fits.Column(
+        #         name="flag",
+        #         format="PL()",
+        #         array=[
+        #             np.array([True, False, True]),
+        #             np.array([False, True]),
+        #             np.array([], dtype=bool),
+        #             np.array([True, True, False, False]),
+        #         ],
+        #     )
+        #     fits.BinTableHDU.from_columns([col]).writeto(
+        #         "vla_logical_pre_fix.fits"
+        #     )
+        path = self.data("vla_logical_pre_fix.fits")
+        with pytest.warns(
+            AstropyUserWarning, match="appears to have been written by an older"
+        ):
+            with fits.open(path) as hdul:
+                data = hdul[1].data["flag"]
+                assert data[0].dtype == bool
+                assert list(data[0]) == [True, False, True]
+                assert list(data[1]) == [False, True]
+                assert list(data[2]) == []
+                assert list(data[3]) == [True, True, False, False]
+
+    @pytest.mark.parametrize(
+        "rowval, exc",
+        [
+            (["T", "F", "T"], ValueError),
+            (["Y", "N"], ValueError),
+            ([None, False, True], TypeError),
+        ],
+    )
+    def test_logical_vla_rejects_non_numeric_input(self, tmp_path, rowval, exc):
+        """Logical VLA columns reject non-numeric / non-bool inputs at
+        write time (matching the behavior of astropy <= 7.2.0). Without
+        this the new bool conversion would silently coerce strings/None:
+        e.g. ``["T", "F", "T"]`` to ``[True, True, True]`` because
+        non-empty strings are truthy. Construction also fires the new
+        non-bool/non-bytes deprecation warning.
+        """
+        with pytest.warns(AstropyDeprecationWarning, match="bool array"):
+            col = fits.Column(name="flag", format="PL()", array=[rowval])
+        with pytest.raises(exc):
+            fits.BinTableHDU.from_columns([col]).writeto(tmp_path / "bad.fits")
+
+    def test_logical_vla_as_bytes(self):
+        """``logical_as_bytes=True`` exposes the raw FITS L wire bytes
+        (b'T'/b'F'/b'\\x00') for VLA logical columns, so NULL is
+        distinguishable from False.
+        """
+        # The data file used here was generated with the following code
+        # so that its heap exercises all three FITS L wire bytes (b'T',
+        # b'F', and b'\x00'):
+        #
+        #     import numpy as np
+        #     from astropy.io import fits
+        #
+        #     col = fits.Column(
+        #         name="flag",
+        #         format="PL()",
+        #         array=[
+        #             np.array([True, False, True], dtype=bool),
+        #             np.array([False, True], dtype=bool),
+        #         ],
+        #     )
+        #     fits.BinTableHDU.from_columns([col]).writeto(
+        #         "vla_logical_null.fits"
+        #     )
+        #     # Replace the b'F' in row 0 with a NULL byte.
+        #     raw = bytearray(open("vla_logical_null.fits", "rb").read())
+        #     raw[raw.find(b"TFTFT") + 1] = 0
+        #     open("vla_logical_null.fits", "wb").write(bytes(raw))
+        path = self.data("vla_logical_null.fits")
+
+        # Default read warns about NULL and converts it to False.
+        with pytest.warns(AstropyUserWarning, match="contains NULL"):
+            with fits.open(path) as hdul:
+                d = hdul[1].data["flag"]
+                assert d[0].dtype == bool
+                assert list(d[0]) == [True, False, True]
+
+        # logical_as_bytes=True exposes the raw bytes; NULL is preserved.
+        with fits.open(path, logical_as_bytes=True) as hdul:
+            d = hdul[1].data["flag"]
+            assert d[0].dtype == np.dtype("S1")
+            assert d[0].tobytes() == b"T\x00T"
+            assert d[1].tobytes() == b"FT"
+
+    def test_logical_vla_as_bytes_roundtrip(self, tmp_path):
+        """A logical VLA read with ``logical_as_bytes=True`` can be
+        written back and re-read as bytes verbatim, including NULL.
+        """
+        path = tmp_path / "vla_log.fits"
+        # Write rows directly as |S1 byte arrays; NULL is preserved.
+        rows = [
+            np.array([b"T", b"\x00", b"T"], dtype="S1"),
+            np.array([b"F", b"T"], dtype="S1"),
+        ]
+        col = fits.Column(name="flag", format="PL()", array=rows)
+        fits.BinTableHDU.from_columns([col]).writeto(path)
+
+        with fits.open(path, logical_as_bytes=True) as hdul:
+            d = hdul[1].data["flag"]
+            assert d[0].dtype == np.dtype("S1")
+            assert d[0].tobytes() == b"T\x00T"
+            assert d[1].tobytes() == b"FT"
+
+    def test_logical_fixed_all_zero_warns(self, tmp_path):
+        """A fixed-length L column whose data bytes are all 0x00 is
+        *not* ambiguous: astropy has never written 0x00 for ``False``
+        in a fixed-length L column (False has always been ``b'F'``),
+        so an all-zero column unambiguously means all-NULL. The
+        ``contains NULL`` warning should therefore still fire here.
+        This is the deliberate counterpart to
+        ``test_logical_vla_all_zero_heap_does_not_warn``: the same
+        on-disk byte pattern is ambiguous for VLAs but not for
+        fixed-length columns.
+        """
+        # Build the file via the |S1 write path so the data bytes are
+        # genuinely 0x00 (the bool path would write b'F').
+        raw = np.array([b"\x00", b"\x00", b"\x00"], dtype="S1")
+        col = fits.Column(name="flag", format="L", array=raw)
+        path = tmp_path / "fixed_all_zero.fits"
+        fits.BinTableHDU.from_columns([col]).writeto(path)
+
+        with pytest.warns(AstropyUserWarning, match="contains NULL"):
+            with fits.open(path) as hdul:
+                d = hdul[1].data["flag"]
+                assert d.dtype == bool
+                assert list(d) == [False, False, False]
+
+    def test_logical_vla_all_zero_heap_does_not_warn(self):
+        """A logical VLA file whose heap is entirely 0x00 bytes is
+        genuinely ambiguous: under the FITS standard those bytes mean
+        NULL, under the astropy <= 7.2.0 legacy encoding they mean
+        False. The read value (``False``) is correct under either
+        interpretation, so no NULL warning should be emitted (it would
+        be misleading for legacy all-False files) and no legacy warning
+        should be emitted either (the legacy heuristic in
+        ``_detect_legacy_logical_vla_heap`` requires a 0x01 anchor and
+        therefore correctly does not classify all-zero heaps as legacy).
+        Users who wish to inspect the raw bytes can still reopen with
+        ``logical_as_bytes=True``.
+        """
+        # The data file used here was generated with the following
+        # code; it is a 2-row PL column whose 5-byte heap was patched
+        # from b'FFFFF' (False, False, False / False, False) to all
+        # NUL bytes:
+        #
+        #     import numpy as np
+        #     from astropy.io import fits
+        #
+        #     col = fits.Column(
+        #         name="flag",
+        #         format="PL()",
+        #         array=[
+        #             np.array([False, False, False], dtype=bool),
+        #             np.array([False, False], dtype=bool),
+        #         ],
+        #     )
+        #     fits.BinTableHDU.from_columns([col]).writeto(
+        #         "vla_logical_all_zero.fits"
+        #     )
+        #     raw = bytearray(open("vla_logical_all_zero.fits", "rb").read())
+        #     i = raw.find(b"FFFFF")
+        #     raw[i:i + 5] = b"\x00\x00\x00\x00\x00"
+        #     open("vla_logical_all_zero.fits", "wb").write(bytes(raw))
+        path = self.data("vla_logical_all_zero.fits")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", AstropyUserWarning)
+            with fits.open(path) as hdul:
+                d = hdul[1].data["flag"]
+                assert d[0].dtype == bool
+                assert list(d[0]) == [False, False, False]
+                assert list(d[1]) == [False, False]
+
+        # logical_as_bytes=True still exposes the raw bytes verbatim.
+        with fits.open(path, logical_as_bytes=True) as hdul:
+            d = hdul[1].data["flag"]
+            assert d[0].dtype == np.dtype("S1")
+            assert d[0].tobytes() == b"\x00\x00\x00"
+            assert d[1].tobytes() == b"\x00\x00"
+
+    def test_logical_as_bytes(self, tmp_path):
+        """Test that logical_as_bytes returns raw FITS values for logical columns.
+
+        This allows distinguishing between False (b'F') and NULL (b'\\x00')
+        values in logical columns, which is otherwise not possible when
+        reading as boolean arrays.
+        """
+        # The test file contains: True, NULL, False as raw bytes
+        with fits.open(self.data("logical_null.fits"), logical_as_bytes=True) as hdul:
+            raw_data = hdul[1].data["flag"]
+            # Should return single-byte strings: b'T', b'\x00' (NULL), b'F'.
+            # Note: numpy |S1 strips trailing NUL bytes on read, so the NUL
+            # entry appears as b''; compare on the raw byte values instead.
+            assert raw_data.dtype == np.dtype("S1")
+            assert raw_data.tobytes() == b"T\x00F"
+            assert raw_data[0] == b"T"
+            assert raw_data[2] == b"F"
+
+        # Without logical_as_bytes, NULL becomes False (indistinguishable)
+        # and a warning is issued
+        with pytest.warns(AstropyUserWarning, match="contains NULL"):
+            with fits.open(self.data("logical_null.fits")) as hdul:
+                bool_data = hdul[1].data["flag"]
+                assert bool_data.dtype == bool
+                assert bool_data[0] is np.True_
+                assert bool_data[1] is np.False_  # NULL became False
+                assert bool_data[2] is np.False_
+
+        # Writing: a user can build a new table from a |S1 array with NULL
+        # bytes and round-trip it preserving the NULL values.
+        raw = np.array([b"T", b"\x00", b"F"], dtype="S1")
+        col = fits.Column(name="flag", format="L", array=raw)
+        hdu = fits.BinTableHDU.from_columns([col])
+        out_path = tmp_path / "roundtrip.fits"
+        hdu.writeto(out_path)
+
+        with fits.open(out_path, logical_as_bytes=True) as hdul:
+            roundtripped = hdul[1].data["flag"]
+            assert roundtripped.dtype == np.dtype("S1")
+            assert roundtripped.tobytes() == b"T\x00F"
+
+        # And that the same file, read without logical_as_bytes, still
+        # warns about the NULL and returns False for it.
+        with pytest.warns(AstropyUserWarning, match="contains NULL"):
+            with fits.open(out_path) as hdul:
+                assert hdul[1].data["flag"].tolist() == [True, False, False]
+
+    def test_logical_nrows_fill_then_assign(self, tmp_path):
+        """A logical ('L') column created via ``from_columns(..., nrows=N)``
+        without an input array must default to False (b'F'), not NULL
+        (b'\\x00'). Otherwise a row later assigned ``False`` is left as the
+        zero-fill byte and silently stored as NULL, because ``_scale_back``
+        cannot distinguish an untouched NULL from an explicit False once both
+        appear as raw 0x00 with a cached bool of ``False``. Regression test
+        for the breakage introduced by logical-NULL support in 8.0.0.
+        """
+        hdu = fits.BinTableHDU.from_columns([fits.Column("FLAG", "L")], nrows=4)
+        for i, value in enumerate([True, False, True, False]):
+            hdu.data[i]["FLAG"] = value
+        path = tmp_path / "flags.fits"
+        hdu.writeto(path)
+
+        # Raw bytes: the False rows must be b'F', never NULL (b'\x00').
+        with fits.open(path, logical_as_bytes=True) as hdul:
+            raw = hdul[1].data["FLAG"]
+            assert raw.tobytes() == b"TFTF"
+
+        # A normal read must therefore neither warn about NULL nor mangle
+        # the values.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", AstropyUserWarning)
+            with fits.open(path) as hdul:
+                assert hdul[1].data["FLAG"].tolist() == [True, False, True, False]
+
+        # Rows left untouched after creation also default to False, not NULL.
+        hdu = fits.BinTableHDU.from_columns([fits.Column("FLAG", "L")], nrows=3)
+        hdu.data[0]["FLAG"] = True
+        partial_path = tmp_path / "partial.fits"
+        hdu.writeto(partial_path)
+        with fits.open(partial_path, logical_as_bytes=True) as hdul:
+            assert hdul[1].data["FLAG"].tobytes() == b"TFF"
+
+    def test_logical_as_bytes_invalid_byte_rejected_on_write(self, tmp_path):
+        """Bytes assigned into a logical ('L') column read with
+        ``logical_as_bytes=True`` alias the raw data directly, bypassing the
+        construction-time validation. Writing a column whose raw bytes are not
+        one of the FITS L wire-format values b'T', b'F', b'\\x00' therefore
+        raises ``ValueError`` at write time.
+        """
+        src = np.array([b"T", b"\x00", b"F"], dtype="S1")
+        path = tmp_path / "src.fits"
+        fits.BinTableHDU.from_columns([fits.Column("flag", "L", array=src)]).writeto(
+            path
+        )
+
+        # Valid wire-format bytes round-trip without error.
+        with fits.open(path, logical_as_bytes=True) as hdul:
+            hdul[1].data["flag"][0] = b"\x00"
+            hdul[1].data["flag"][2] = b"T"
+            out = tmp_path / "ok.fits"
+            hdul.writeto(out)
+        with fits.open(out, logical_as_bytes=True) as hdul:
+            assert hdul[1].data["flag"].tobytes() == b"\x00\x00T"
+
+        # An invalid byte is rejected on write.
+        for bad in (b"X", b"1", b"t"):
+            with fits.open(path, logical_as_bytes=True) as hdul:
+                hdul[1].data["flag"][0] = bad
+                with pytest.raises(ValueError, match="only b'T', b'F'"):
+                    hdul.writeto(tmp_path / f"bad_{bad}.fits")
+
     def test_missing_tnull(self):
         """Regression test for https://aeon.stsci.edu/ssb/trac/pyfits/ticket/197"""
 
@@ -2484,17 +3019,17 @@ class TestTableFunctions(FitsTestCase):
             h[1].header["TFORM1"] = "E3"
             del h[1].header["TNULL1"]
 
-        with fits.open(self.temp("test.fits")) as h:
-            pytest.raises(ValueError, lambda: h[1].data["F1"])
-
-        try:
-            with fits.open(self.temp("test.fits")) as h:
-                h[1].data["F1"]
-        except ValueError as e:
-            assert str(e).endswith(
-                "the header may be missing the necessary TNULL1 "
-                "keyword or the table contains invalid data"
-            )
+        with (
+            fits.open(self.temp("test.fits")) as h,
+            pytest.raises(
+                ValueError,
+                match=(
+                    r"the header may be missing the necessary TNULL1 "
+                    "keyword or the table contains invalid data$"
+                ),
+            ),
+        ):
+            h[1].data["F1"]
 
     def test_blank_field_zero(self):
         """Regression test for https://github.com/astropy/astropy/issues/5134
@@ -2525,7 +3060,7 @@ class TestTableFunctions(FitsTestCase):
             h.seek(0)
             h.write(nulled)
 
-        with fits.open(self.temp("ascii_null.fits"), memmap=True) as f:
+        with fits.open(self.temp("ascii_null.fits")) as f:
             assert f[1].data[2][0] == 0
 
         # Test a float column with a null value set and blank fields.
@@ -2546,10 +3081,23 @@ class TestTableFunctions(FitsTestCase):
             h.seek(0)
             h.write(nulled)
 
-        with fits.open(self.temp("ascii_null2.fits"), memmap=True) as f:
-            # (Currently it should evaluate to 0.0, but if a TODO in fitsrec is
-            # completed, then it should evaluate to NaN.)
-            assert f[1].data[2][0] == 0.0 or np.isnan(f[1].data[2][0])
+        with fits.open(self.temp("ascii_null2.fits")) as f:
+            assert np.isnan(f[1].data[2][0])
+
+        # Test a float column with a NaN value
+        a = np.arange(10, dtype=float)
+        a[5] = np.nan
+        table = fits.TableHDU.from_columns(
+            [
+                fits.Column(name="a1", array=a, format="F"),
+                fits.Column(name="a2", array=a, format="F", null=np.nan),
+            ]
+        )
+        table.writeto(self.temp("ascii_null3.fits"))
+
+        with fits.open(self.temp("ascii_null3.fits")) as f:
+            assert np.isnan(f[1].data["a1"][5])
+            assert np.isnan(f[1].data["a2"][5])
 
     def test_column_array_type_mismatch(self):
         """Regression test for https://aeon.stsci.edu/ssb/trac/pyfits/ticket/218"""
@@ -2679,11 +3227,9 @@ class TestTableFunctions(FitsTestCase):
             assert comparerecords(rgr_pl, rgr[0].data)
 
         with fits.open(self.data("zerowidth.fits")) as zwc:
-            # Doesn't pickle zero-width (_phanotm) column 'ORBPARM'
             zwc_pd = pickle.dumps(zwc[2].data)
             zwc_pl = pickle.loads(zwc_pd)
-            with pytest.warns(UserWarning, match="Field 2 has a repeat count of 0"):
-                assert comparerecords(zwc_pl, zwc[2].data)
+            assert comparerecords(zwc_pl, zwc[2].data)
 
     def test_zero_length_table(self):
         array = np.array([], dtype=[("a", "i8"), ("b", "S64"), ("c", ("i4", (3, 2)))])
@@ -2774,13 +3320,7 @@ class TestTableFunctions(FitsTestCase):
 
         with fits.open(self.temp("test2.fits"), mode="update") as hdul:
             assert hdul[1].header["TDIM1"] == "(3,3,2)"
-            # Note: Previously I wrote data['a'][0][1, 1] to address
-            # the single row.  However, this is broken for chararray because
-            # data['a'][0] does *not* return a view of the original array--this
-            # is a bug in chararray though and not a bug in any FITS-specific
-            # code so we'll roll with it for now...
-            # (by the way the bug in question is fixed in newer Numpy versions)
-            hdul[1].data["a"][0, 1, 1] = "XYZ"
+            hdul[1].data["a"][0][1, 1] = "XYZ"
             assert np.all(hdul[1].data["a"][0] == expected)
 
         with fits.open(self.temp("test2.fits")) as hdul:
@@ -2812,10 +3352,6 @@ class TestTableFunctions(FitsTestCase):
         now with reference counting around each test to ensure that the
         leaks are fixed.
         """
-
-        from .test_connect import TestMultipleHDU
-        from .test_core import TestCore
-
         t1 = TestCore()
         t1.setup_method()
         try:
@@ -2848,6 +3384,27 @@ class TestTableFunctions(FitsTestCase):
         finally:
             t3.teardown_class()
         del t3
+
+    @pytest.mark.skipif(not HAVE_OBJGRAPH, reason="requires objgraph")
+    def test_reference_leak_copyhdu(self):
+        """Regression test for https://github.com/astropy/astropy/issues/15649"""
+
+        def readfile(filename):
+            with fits.open(filename) as hdul:
+                hdu = hdul[1].copy()
+
+        with _refcounting("FITS_rec"):
+            readfile(self.data("memtest.fits"))
+
+    def test_converted_copy(self):
+        """
+        Test that the bintable converted arrays are copied when the fitsrec is.
+        Related to https://github.com/astropy/astropy/issues/15649
+        """
+
+        with fits.open(self.data("memtest.fits")) as hdul:
+            data = hdul[1].data.copy()
+            assert data._converted is not hdul[1].data._converted
 
     def test_dump_overwrite(self):
         with fits.open(self.data("table.fits")) as hdul:
@@ -2970,9 +3527,9 @@ def _refcounting(type_):
     refcount = len(objgraph.by_type(type_))
     yield refcount
     gc.collect()
-    assert (
-        len(objgraph.by_type(type_)) <= refcount
-    ), "More {0!r} objects still in memory than before."
+    assert len(objgraph.by_type(type_)) <= refcount, (
+        "More {0!r} objects still in memory than before."
+    )
 
 
 class TestVLATables(FitsTestCase):
@@ -2992,6 +3549,9 @@ class TestVLATables(FitsTestCase):
                 q = toto[1].data.field("QUAL_SPE")
                 assert (q[0][4:8] == np.array([0, 0, 0, 0], dtype=np.uint8)).all()
                 assert toto[1].columns[0].format.endswith("J(1571)")
+                # Test BINTableHDU copy
+                copytoto = toto[1].copy()
+                assert (toto[1].data.field("QUAL_SPE")[0][4:8] == q[0][4:8]).all()
 
         for code in ("PJ()", "QJ()"):
             test(code)
@@ -3201,13 +3761,10 @@ class TestVLATables(FitsTestCase):
 
         col = fits.Column(name="MATRIX", format=f"PD({nelem})", unit="", array=matrix)
 
-        t = fits.BinTableHDU.from_columns([col])
-        t.name = "MATRIX"
-
         with pytest.raises(
             ValueError, match="Please consider using the 'Q' format for your file."
         ):
-            t.writeto(self.temp("matrix.fits"))
+            fits.BinTableHDU.from_columns([col])
 
     @pytest.mark.skipif(sys.maxsize < 2**32, reason="requires 64-bit system")
     @pytest.mark.skipif(sys.platform == "win32", reason="Cannot test on Windows")
@@ -3339,6 +3896,57 @@ class TestVLATables(FitsTestCase):
             ValueError, match=r"invalid literal for int\(\) with base 10"
         ):
             fits.BinTableHDU.from_columns([c1])
+
+    def test_vla_slice(self):
+        filename = self.data("variable_length_table.fits")
+
+        # slicing the VLA array
+        with fits.open(filename) as hdul:
+            hdu = hdul[1]
+            arr = hdu.data["var"][:1]
+            assert arr.tolist() == [[45, 56]]
+            assert arr[0].dtype == np.int16
+
+        # slicing .data
+        with fits.open(filename) as hdul:
+            hdu = hdul[1]
+            arr = hdu.data[:1]["var"]
+            assert arr.tolist() == [[45, 56]]
+            assert arr[0].dtype == np.int16
+
+    def test_vla_slice2(self):
+        filename = self.data("theap-gap.fits")
+
+        # slicing the VLA array
+        with fits.open(filename) as hdul:
+            hdu = hdul[1]
+            arr = hdu.data["arr"][:3]
+            assert arr.tolist() == [[], [0], [0, 1]]
+            assert arr[1].dtype == np.int32
+
+        # slicing .data
+        with fits.open(filename) as hdul:
+            hdu = hdul[1]
+            arr = hdu.data[:3]["arr"]
+            assert arr.tolist() == [[], [0], [0, 1]]
+            assert arr[1].dtype == np.int32
+
+    def test_vla_update(self):
+        """Check that heap is correctly updated after a VLA is modified.
+
+        Regression test for https://github.com/astropy/astropy/issues/18479
+
+        """
+        filename = self.data("variable_length_table.fits")
+        with fits.open(filename) as hdul:
+            for _v in hdul[1].data["var"]:
+                _v[:] = 0
+            hdul.writeto(self.temp("test.fits"), checksum=True)
+
+        with fits.open(self.temp("test.fits"), checksum=True) as hdul:
+            np.testing.assert_array_equal(hdul[1].data["var"][0], 0)
+            np.testing.assert_array_equal(hdul[1].data["var"][1], 0)
+            assert hdul[1].header["DATASUM"] == "1507344"
 
 
 # These are tests that solely test the Column and ColDefs interfaces and
@@ -3477,7 +4085,8 @@ class TestColumnFunctions(FitsTestCase):
         a sequence of non-Column objects.
         """
 
-        pytest.raises(TypeError, fits.ColDefs, [1, 2, 3])
+        with pytest.raises(TypeError):
+            fits.ColDefs([1, 2, 3])
 
     def test_coldefs_init_from_array(self):
         """Test that ColDefs._init_from_array works with single element data-
@@ -3519,14 +4128,9 @@ class TestColumnFunctions(FitsTestCase):
             assert comparerecords(rgr_pl, rgr[0].data)
 
         with fits.open(self.data("zerowidth.fits")) as zwc:
-            # Doesn't pickle zero-width (_phanotm) column 'ORBPARM'
             zwc_pd = pickle.dumps(zwc[2].data)
             zwc_pl = pickle.loads(zwc_pd)
-            with pytest.warns(
-                UserWarning,
-                match=r"Field 2 has a repeat count of 0 in its format code",
-            ):
-                assert comparerecords(zwc_pl, zwc[2].data)
+            assert comparerecords(zwc_pl, zwc[2].data)
 
     def test_column_lookup_by_name(self):
         """Tests that a `ColDefs` can be indexed by column name."""
@@ -3538,6 +4142,28 @@ class TestColumnFunctions(FitsTestCase):
 
         assert cols["a"] == cols[0]
         assert cols["b"] == cols[1]
+
+    def test_column_membership(self):
+        """Tests that the membership operator can be used for `ColDefs`."""
+
+        a = fits.Column(name="a", format="D")
+        b = fits.Column(name="b", format="D")
+        c = fits.Column(name="c", format="D")
+
+        cols = fits.ColDefs([a, b])
+
+        # String tests
+        assert "a" in cols
+        assert "b" in cols
+        assert "c" not in cols
+        # Column tests
+        assert a in cols
+        assert b in cols
+        assert c not in cols
+        # General case (false)
+        assert 1 not in cols
+        assert cols not in cols
+        assert [a, b] not in cols
 
     def test_column_attribute_change_after_removal(self):
         """
@@ -3724,8 +4350,6 @@ def test_regression_5383():
 
 
 def test_table_to_hdu():
-    from astropy.table import Table
-
     table = Table(
         [[1, 2, 3], ["a", "b", "c"], [2.3, 4.5, 6.7]],
         names=["a", "b", "c"],
@@ -3750,6 +4374,13 @@ def test_table_to_hdu():
 
     assert hdu.header["FOO"] == "bar"
     assert hdu.header["TEST"] == 1
+
+    with pytest.warns(
+        UnitsWarning, match="'not-a-unit' did not parse as fits unit"
+    ) as w:
+        hdu = fits.BinTableHDU(table, character_as_bytes=True)
+
+    assert np.array_equal(hdu.data["b"], [b"a", b"b", b"c"])
 
 
 def test_regression_scalar_indexing():
@@ -3839,3 +4470,62 @@ def test_unit_parse_strict(tmp_path):
 
     with pytest.warns(UnitsWarning):
         Table.read(path, unit_parse_strict="warn")
+
+
+def test_invalid_table_array():
+    # see https://github.com/astropy/astropy/issues/4580
+    data = np.empty((5, 100), dtype=[("w", ">f8"), ("f", ">f4")])
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"Input data with shape \(5, 100\) is not a valid "
+            r"representation of a row-oriented table\."
+        ),
+    ):
+        fits.BinTableHDU(data, name="DATA")
+
+
+def test_repr_scaling(tmp_path):
+    cols = [
+        fits.Column(name="a", array=np.array([1, 2]), format="I"),
+        fits.Column(name="b", array=np.array([1, 2]), format="I"),
+    ]
+    hdu = fits.BinTableHDU.from_columns(cols)
+    hdu.header["TSCAL2"] = 0.1
+    hdu.header["TZERO2"] = 10
+    hdu.writeto(tmp_path / "test.fits")
+
+    data = fits.getdata(tmp_path / "test.fits")
+    assert repr(data) == (
+        "FITS_rec([(1, 10.1), (2, 10.2)],\n"
+        "         dtype=(numpy.record, [('a', '>i2'), ('b', '>i2')]))"
+    )
+
+
+def test_one_row_string_column(tmp_path):
+    # Issue #18174 control. One-row table should still read/write normally after zero row fix
+    data = np.zeros((1, 3), dtype="|S8")
+    col = fits.Column(name="FOO", format="24A", dim="(8,3)", array=data)
+    hdul = fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns([col])])
+
+    outfile = tmp_path / "test.fits"
+    hdul.writeto(outfile)
+
+    with fits.open(outfile) as hdul:
+        table_data = hdul[1].data
+    assert table_data.shape[0] == 1
+
+
+def test_zero_row_string_column(tmp_path):
+    # issue #18174 writing a zero row BinTableHDU with multidimensional string column
+    data = np.zeros((0, 3), dtype="|S8")
+    col = fits.Column(name="FOO", format="24A", dim="(8,3)", array=data)
+    hdul = fits.HDUList([fits.PrimaryHDU(), fits.BinTableHDU.from_columns([col])])
+
+    outfile = tmp_path / "test.fits"
+    hdul.writeto(outfile)
+
+    # re-open and check for zero rows
+    with fits.open(outfile) as hdul:
+        table_data = hdul[1].data
+    assert table_data.shape[0] == 0

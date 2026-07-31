@@ -23,15 +23,23 @@ from astropy.io.tests import safeio
 from astropy.utils import data
 from astropy.utils.compat.optional_deps import (
     HAS_BZ2,  # NOTE: Python can be built without bz2
+    HAS_LZMA,  # NOTE: Python can be built without lzma
+    HAS_UNCOMPRESSPY,
 )
 from astropy.utils.data import conf
-from astropy.utils.exceptions import AstropyDeprecationWarning, AstropyUserWarning
+from astropy.utils.exceptions import AstropyUserWarning
 from astropy.utils.misc import _NOT_OVERWRITING_MSG_MATCH
 
 from .conftest import FitsTestCase
 
 if HAS_BZ2:
     import bz2
+
+if HAS_LZMA:
+    import lzma
+
+if HAS_UNCOMPRESSPY:
+    import uncompresspy
 
 
 class TestCore(FitsTestCase):
@@ -325,10 +333,14 @@ class TestCore(FitsTestCase):
         assert ext == 1
         hl.close()
 
-        pytest.raises(ValueError, _getext, filename, "readonly", 1, 2)
-        pytest.raises(ValueError, _getext, filename, "readonly", (1, 2))
-        pytest.raises(ValueError, _getext, filename, "readonly", "sci", "sci")
-        pytest.raises(TypeError, _getext, filename, "readonly", 1, 2, 3)
+        with pytest.raises(ValueError):
+            _getext(filename, "readonly", 1, 2)
+        with pytest.raises(ValueError):
+            _getext(filename, "readonly", (1, 2))
+        with pytest.raises(ValueError):
+            _getext(filename, "readonly", "sci", "sci")
+        with pytest.raises(TypeError):
+            _getext(filename, "readonly", 1, 2, 3)
 
         hl, ext = _getext(filename, "readonly", ext=1)
         assert ext == 1
@@ -338,12 +350,10 @@ class TestCore(FitsTestCase):
         assert ext == ("sci", 2)
         hl.close()
 
-        pytest.raises(
-            TypeError, _getext, filename, "readonly", 1, ext=("sci", 2), extver=3
-        )
-        pytest.raises(
-            TypeError, _getext, filename, "readonly", ext=("sci", 2), extver=3
-        )
+        with pytest.raises(TypeError):
+            _getext(filename, "readonly", 1, ext=("sci", 2), extver=3)
+        with pytest.raises(TypeError):
+            _getext(filename, "readonly", ext=("sci", 2), extver=3)
 
         hl, ext = _getext(filename, "readonly", "sci")
         assert ext == ("sci", 1)
@@ -363,8 +373,10 @@ class TestCore(FitsTestCase):
         assert ext == ("sci", 1)
         hl.close()
 
-        pytest.raises(TypeError, _getext, filename, "readonly", "sci", ext=1)
-        pytest.raises(TypeError, _getext, filename, "readonly", "sci", 1, extver=2)
+        with pytest.raises(TypeError):
+            _getext(filename, "readonly", "sci", ext=1)
+        with pytest.raises(TypeError):
+            _getext(filename, "readonly", "sci", 1, extver=2)
 
         hl, ext = _getext(filename, "readonly", extname="sci")
         assert ext == ("sci", 1)
@@ -374,7 +386,8 @@ class TestCore(FitsTestCase):
         assert ext == ("sci", 1)
         hl.close()
 
-        pytest.raises(TypeError, _getext, filename, "readonly", extver=1)
+        with pytest.raises(TypeError):
+            _getext(filename, "readonly", extver=1)
 
     def test_extension_name_case_sensitive(self):
         """
@@ -517,8 +530,10 @@ class TestCore(FitsTestCase):
         del h1.header["EXTLEVEL"]
         assert h1.level == 1
 
-        pytest.raises(TypeError, setattr, h1, "ver", "FOO")
-        pytest.raises(TypeError, setattr, h1, "level", "BAR")
+        with pytest.raises(TypeError):
+            h1.ver = "FOO"
+        with pytest.raises(TypeError):
+            h1.level = "BAR"
 
     def test_consecutive_writeto(self):
         """
@@ -796,6 +811,14 @@ class TestFileFunctions(FitsTestCase):
             assert fits_handle._file.compression == "bzip2"
             assert len(fits_handle) == 5
 
+        for mode in ("append", "update"):
+            with pytest.raises(
+                OSError,
+                match="update and append modes are not supported with bzip2 files",
+            ):
+                with fits.open(bzip_file, mode=mode) as fits_handle:
+                    pass
+
     @pytest.mark.skipif(not HAS_BZ2, reason="Python built without bz2 module")
     def test_open_bzipped_from_handle(self):
         with open(self._make_bzip2_file(), "rb") as handle:
@@ -833,6 +856,137 @@ class TestFileFunctions(FitsTestCase):
         with fits.open(self.temp("testname.fits.bz2")) as hdul:
             assert hdul[0].header == h.header
 
+    @pytest.mark.skipif(not HAS_LZMA, reason="Python built without lzma module")
+    def test_open_lzma(self):
+        lzma_file = self._make_lzma_file()
+
+        with fits.open(lzma_file) as fits_handle:
+            assert fits_handle._file.compression == "lzma"
+            assert len(fits_handle) == 5
+
+        with fits.open(lzma_file, decompress_in_memory=True) as fits_handle:
+            assert fits_handle._file.compression == "lzma"
+            assert len(fits_handle) == 5
+
+        with fits.open(lzma.LZMAFile(lzma_file)) as fits_handle:
+            assert fits_handle._file.compression == "lzma"
+            assert len(fits_handle) == 5
+
+        for mode in ("append", "update"):
+            with pytest.raises(
+                OSError,
+                match="update and append modes are not supported with lzma files",
+            ):
+                with fits.open(lzma_file, mode=mode) as fits_handle:
+                    pass
+
+    @pytest.mark.skipif(not HAS_LZMA, reason="Python built without lzma module")
+    def test_open_lzma_from_handle(self):
+        with open(self._make_lzma_file(), "rb") as handle:
+            with fits.open(handle) as fits_handle:
+                assert fits_handle._file.compression == "lzma"
+                assert len(fits_handle) == 5
+
+    @pytest.mark.skipif(not HAS_LZMA, reason="Python built without lzma module")
+    def test_detect_lzma(self):
+        """Test detection of a lzma file when the extension is not .xz."""
+        with fits.open(self._make_lzma_file("test0.xx")) as fits_handle:
+            assert fits_handle._file.compression == "lzma"
+            assert len(fits_handle) == 5
+
+    @pytest.mark.skipif(not HAS_LZMA, reason="Python built without lzma module")
+    def test_writeto_lzma_fileobj(self):
+        """Test writing to a lzma.LZMAFile file like object"""
+        fileobj = lzma.LZMAFile(self.temp("test.fits.xz"), "w")
+        h = fits.PrimaryHDU()
+        try:
+            h.writeto(fileobj)
+        finally:
+            fileobj.close()
+
+        with fits.open(self.temp("test.fits.xz")) as hdul:
+            assert hdul[0].header == h.header
+
+    @pytest.mark.skipif(not HAS_LZMA, reason="Python built without lzma module")
+    def test_writeto_lzma_filename(self):
+        """Test writing to a lzma file by name"""
+        filename = self.temp("testname.fits.xz")
+        h = fits.PrimaryHDU()
+        h.writeto(filename)
+
+        with fits.open(self.temp("testname.fits.xz")) as hdul:
+            assert hdul[0].header == h.header
+
+    @pytest.mark.skipif(
+        not HAS_UNCOMPRESSPY, reason="Optional package uncompresspy not installed"
+    )
+    def test_open_lzw(self):
+        lzw_file = self._make_lzw_file()
+
+        arcfile = "ONTT.1991-12-30T08:55:46.000.fits"
+        last_datapoint = 53
+        with fits.open(lzw_file) as fits_handle:
+            assert fits_handle._file.compression == "lzw"
+            assert len(fits_handle) == 1
+            assert fits_handle[0].header["ARCFILE"] == arcfile
+            assert fits_handle[0].data[-1, -1] == last_datapoint
+
+        with fits.open(lzw_file, decompress_in_memory=True) as fits_handle:
+            assert fits_handle._file.compression == "lzw"
+            assert len(fits_handle) == 1
+            assert fits_handle[0].header["ARCFILE"] == arcfile
+            assert fits_handle[0].data[-1, -1] == last_datapoint
+
+        with fits.open(uncompresspy.LZWFile(lzw_file)) as fits_handle:
+            assert fits_handle._file.compression == "lzw"
+            assert len(fits_handle) == 1
+            assert fits_handle[0].header["ARCFILE"] == arcfile
+            assert fits_handle[0].data[-1, -1] == last_datapoint
+
+        for mode in ("append", "update"):
+            with pytest.raises(
+                OSError, match=f"{mode} mode not supported with LZW files"
+            ):
+                with fits.open(lzw_file, mode=mode) as fits_handle:
+                    pass
+
+    @pytest.mark.skipif(
+        not HAS_UNCOMPRESSPY, reason="Optional package uncompresspy not installed"
+    )
+    def test_open_lzw_from_handle(self):
+        arcfile = "ONTT.1991-12-30T08:55:46.000.fits"
+        last_datapoint = 53
+        with open(self._make_lzw_file(), "rb") as handle:
+            with fits.open(handle) as fits_handle:
+                assert fits_handle._file.compression == "lzw"
+                assert len(fits_handle) == 1
+                assert fits_handle[0].header["ARCFILE"] == arcfile
+                assert fits_handle[0].data[-1, -1] == last_datapoint
+
+    @pytest.mark.skipif(
+        not HAS_UNCOMPRESSPY, reason="Optional package uncompresspy not installed"
+    )
+    def test_detect_lzw(self):
+        """Test detection of a lzw file when the extension is not .Z."""
+        arcfile = "ONTT.1991-12-30T08:55:46.000.fits"
+        last_datapoint = 53
+        with fits.open(self._make_lzw_file("test0.xx")) as fits_handle:
+            assert fits_handle._file.compression == "lzw"
+            assert len(fits_handle) == 1
+            assert fits_handle[0].header["ARCFILE"] == arcfile
+            assert fits_handle[0].data[-1, -1] == last_datapoint
+
+    @pytest.mark.skipif(
+        not HAS_UNCOMPRESSPY, reason="Optional package uncompresspy not installed"
+    )
+    def test_writeto_lzw_filename(self):
+        """Test writing to a LZW file by name. This should fail as writing LZW
+        is not supported."""
+        filename = self.temp("testname.fits.Z")
+        h = fits.PrimaryHDU()
+        with pytest.raises(OSError, match="mode not supported with LZW files"):
+            h.writeto(filename)
+
     def test_open_zipped(self):
         zip_file = self._make_zip_file()
 
@@ -865,12 +1019,16 @@ class TestFileFunctions(FitsTestCase):
         """Opening zipped files in a writeable mode should fail."""
 
         zf = self._make_zip_file()
-        pytest.raises(OSError, fits.open, zf, "update")
-        pytest.raises(OSError, fits.open, zf, "append")
+        with pytest.raises(OSError):
+            fits.open(zf, "update")
+        with pytest.raises(OSError):
+            fits.open(zf, "append")
 
         zf = zipfile.ZipFile(zf, "a")
-        pytest.raises(OSError, fits.open, zf, "update")
-        pytest.raises(OSError, fits.open, zf, "append")
+        with pytest.raises(OSError):
+            fits.open(zf, "update")
+        with pytest.raises(OSError):
+            fits.open(zf, "append")
 
     def test_read_open_astropy_gzip_file(self):
         """
@@ -953,7 +1111,7 @@ class TestFileFunctions(FitsTestCase):
         with fits.open(self.temp("test.fits.gz")) as hdul:
             assert np.all(hdul[0].data == data)
 
-    @pytest.mark.parametrize("ext", ["gz", "bz2", "zip"])
+    @pytest.mark.parametrize("ext", ["gz", "bz2", "zip", "xz", "Z"])
     def test_compressed_ext_but_not_compressed(self, ext):
         testfile = self.temp(f"test0.fits.{ext}")
         shutil.copy(self.data("test0.fits"), testfile)
@@ -1003,43 +1161,41 @@ class TestFileFunctions(FitsTestCase):
         object.
         """
 
-        self.copy_file("test0.fits")
+        testfile = self.copy_file("test0.fits")
 
         # Opening in text mode should outright fail
         for mode in ("r", "w", "a"):
-            with open(self.temp("test0.fits"), mode) as f:
-                pytest.raises(ValueError, fits.HDUList.fromfile, f)
+            with open(testfile, mode) as f:
+                with pytest.raises(ValueError):
+                    fits.HDUList.fromfile(f)
 
         # Need to re-copy the file since opening it in 'w' mode blew it away
-        self.copy_file("test0.fits")
+        testfile = self.copy_file("test0.fits")
 
-        with open(self.temp("test0.fits"), "rb") as f:
+        with open(testfile, "rb") as f:
             with fits.HDUList.fromfile(f) as h:
                 assert h.fileinfo(0)["filemode"] == "readonly"
 
         for mode in ("wb", "ab"):
-            with open(self.temp("test0.fits"), mode) as f:
+            with open(testfile, mode) as f:
                 with fits.HDUList.fromfile(f) as h:
                     # Basically opening empty files for output streaming
                     assert len(h) == 0
 
         # Need to re-copy the file since opening it in 'w' mode blew it away
-        self.copy_file("test0.fits")
-
-        with open(self.temp("test0.fits"), "wb+") as f:
+        with open(self.copy_file("test0.fits"), "wb+") as f:
             with fits.HDUList.fromfile(f) as h:
                 # wb+ still causes an existing file to be overwritten so there
                 # are no HDUs
                 assert len(h) == 0
 
         # Need to re-copy the file since opening it in 'w' mode blew it away
-        self.copy_file("test0.fits")
-
-        with open(self.temp("test0.fits"), "rb+") as f:
+        testfile = self.copy_file("test0.fits")
+        with open(testfile, "rb+") as f:
             with fits.HDUList.fromfile(f) as h:
                 assert h.fileinfo(0)["filemode"] == "update"
 
-        with open(self.temp("test0.fits"), "ab+") as f:
+        with open(testfile, "ab+") as f:
             with fits.HDUList.fromfile(f) as h:
                 assert h.fileinfo(0)["filemode"] == "append"
 
@@ -1061,19 +1217,17 @@ class TestFileFunctions(FitsTestCase):
         _File.__dict__["_mmap_available"]._cache.clear()
 
         try:
-            self.copy_file("test0.fits")
+            testfile = self.copy_file("test0.fits")
             with pytest.warns(
                 AstropyUserWarning, match=r"mmap\.flush is unavailable"
             ) as w:
-                with fits.open(
-                    self.temp("test0.fits"), mode="update", memmap=True
-                ) as h:
+                with fits.open(testfile, mode="update", memmap=True) as h:
                     h[1].data[0, 0] = 999
 
             assert len(w) == 1
 
             # Double check that writing without mmap still worked
-            with fits.open(self.temp("test0.fits")) as h:
+            with fits.open(testfile) as h:
                 assert h[1].data[0, 0] == 999
         finally:
             mmap.mmap = old_mmap
@@ -1105,14 +1259,51 @@ class TestFileFunctions(FitsTestCase):
                 return mmap_original(*args, **kwargs)
 
         with fits.open(self.data("test0.fits"), memmap=True) as hdulist:
-            with patch.object(mmap, "mmap", side_effect=mmap_patched) as p:
-                with pytest.warns(
+            with (
+                patch.object(mmap, "mmap", side_effect=mmap_patched) as p,
+                pytest.warns(
                     AstropyUserWarning,
                     match=r"Could not memory map array with mode='readonly'",
-                ):
-                    data = hdulist[1].data
+                ),
+            ):
+                data = hdulist[1].data
                 p.reset_mock()
             assert not data.flags.writeable
+
+    def test_mmap_unsupported_fallback(self):
+        """
+        Regression test for https://github.com/astropy/astropy/issues/19305
+
+        Tests that when mmap fails with an unsupported error (e.g., in WASM
+        environments), astropy falls back to non-mmap reading if memmap was
+        not explicitly requested, but raises the error if memmap=True was
+        explicitly set.
+        """
+
+        def mmap_patched(*args, **kwargs):
+            # Simulate mmap not being supported (e.g., WASM environment)
+            exc = OSError("mmap not supported")
+            exc.errno = errno.ENODEV
+            raise exc
+
+        # With default memmap setting (not specified), we should fall back to
+        # non-mmap reading with a warning. We open file first, then patch only
+        # during data access to avoid interfering with cleanup.
+        with fits.open(self.data("test0.fits")) as hdul:
+            with (
+                patch.object(mmap, "mmap", side_effect=mmap_patched),
+                pytest.warns(AstropyUserWarning, match=r"Could not memory map"),
+            ):
+                data = hdul[1].data
+                assert data is not None
+
+        # With explicit memmap=True, we should raise the error
+        with fits.open(self.data("test0.fits"), memmap=True) as hdul:
+            with (
+                patch.object(mmap, "mmap", side_effect=mmap_patched),
+                pytest.raises(OSError, match=r"mmap not supported"),
+            ):
+                hdul[1].data
 
     def test_mmap_closing(self):
         """
@@ -1343,6 +1534,18 @@ class TestFileFunctions(FitsTestCase):
 
         return bzfile
 
+    def _make_lzma_file(self, filename="test0.fits.xz"):
+        lzmafile = self.temp(filename)
+        with open(self.data("test0.fits"), "rb") as f:
+            lz = lzma.LZMAFile(lzmafile, "w")
+            lz.write(f.read())
+            lz.close()
+
+        return lzmafile
+
+    def _make_lzw_file(self, new_filename=None):
+        return self.copy_file("lzw.fits.Z", new_filename)
+
     def test_simulateonly(self):
         """Write to None simulates writing."""
 
@@ -1484,7 +1687,7 @@ class TestStreamingFunctions(FitsTestCase):
 
     def test_blank_ignore(self):
         with fits.open(self.data("blank.fits"), ignore_blank=True) as f:
-            assert f[0].data.flat[0] == 2
+            assert f[0].data.item(0) == 2
 
     def test_error_if_memmap_impossible(self):
         pth = self.data("blank.fits")
@@ -1496,12 +1699,3 @@ class TestStreamingFunctions(FitsTestCase):
         # See https://github.com/astropy/astropy/issues/3766
         with fits.open(pth, memmap=True, do_not_scale_image_data=True) as hdul:
             hdul[0].data  # Just make sure it doesn't crash
-
-
-def test_deprecated_hdu_classes():
-    from astropy.io.fits.hdu.base import _ExtensionHDU, _NonstandardExtHDU
-
-    with pytest.warns(AstropyDeprecationWarning):
-        _ExtensionHDU()
-    with pytest.warns(AstropyDeprecationWarning):
-        _NonstandardExtHDU()

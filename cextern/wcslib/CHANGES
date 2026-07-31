@@ -1,3 +1,400 @@
+WCSLIB version 8.9 (2026/06/18)
+-------------------------------
+
+WCSLIB policy over the years has been to use the oldest version of C
+that is sufficient for the job, currently C99.  However, as of this
+release, C11 is essentially now a prerequisite for thread-safe
+execution.  This arises from the need to use functions from stdatomic.h
+to deal with race conditions that may arise in the wcserr routines (see
+below).  For now, C99 is still sufficient for thread-safe execution if
+the C99 compiler supports thread-local storage as required by wcsprintf
+(most do), and if wcserr is not used.  However, that situation may not
+persist.
+
+It does not seem unreasonable, nor particularly onerous, to require a
+more modern, thread-aware compiler, namely C11, for threaded execution.
+(It's still pretty old!)
+
+This release is the product of Thomas Robitaille's investigations into
+thread-related problems experienced by Astropy.
+
+* C library
+
+  - In wcsprintf.c, added the thread-local storage (TLS) specifier to
+    static variables.  Without it the module-static output buffer is
+    shared across all threads.  Consequently, if two threads call
+    wcsprintf() concurrently after either has called wcsprintf_set(NULL)
+    they will interleave their writes into the same wcsprintf_buff.
+    While not a problem in itself, if the buffer needs to grow they will
+    race on the realloc() of wcsprintf_buff, thereby corrupting the
+    heap and typically crashing inside realloc().  Reported by Thomas
+    Robitaille with patch.
+
+  - In wcserr.c, conflicts may arise among threads that share a struct
+    containing a wcserr struct (namely celprm, disprm, linprm, prjprm,
+    spcprm, spxprm, tabprm, and wcsprm).  Two threads may attempt
+    simultaneously to operate on the shared wcserr struct, i.e. to set,
+    clear, or copy it, leading to race conditions and potentially
+    segfaults if one thread attempts to read a wcserr struct that is in
+    the process of being cleared by another.  The solution consists of
+    a simple locking mechanism - a spinlock native to C11, provided by
+    stdatomic.h - implemented as a pre-processor macro.  For C99, the
+    macro defaults to a no-op, which means that the problem persists.
+    Consequently, C11 is now required for thread-safe execution if
+    wcserr is used.  Reported by Thomas Robitaille with patch. 
+
+  - In wcs.c, amended error return mapping for the lin routines to
+    account for the addition of LINERR_BAD_PARAM in WCSLIB 8.7.
+    Reported by Thomas Robitaille with patch. 
+
+  - In wcshdo(), fixed a bug introduced in the last release in
+    converting from sprintf() to snprintf() when writing the keycomment
+    for AXIS.jhat.  Reported by Thomas Robitaille with patch.
+
+  - New test program, twcsprintf_pthread, exercises wcsprintf() in
+    threaded execution.  Contributed by Thomas Robitaille.
+
+* Installation
+
+  - Bumped the value of _POSIX_C_SOURCE to 200112L in configure.ac.  The
+    old value, 1, restricts stdio.h to POSIX.1-1990 interfaces, which
+    does not include snprintf().  WCSLIB was failing to compile on macOS
+    with recent versions of clang (16 and later), which promote implicit
+    function declarations from a warning to a hard error.  Reported by
+    Thomas Robitaille.
+
+  - In configure.ac, added tests for an appropriate thread-local storage
+    (TLS) qualifier for C99 (it's native in C11).  Propagated by pre-
+    processor macro WCSLIB_TLS via CPPFLAGS, specifically to the static
+    variables in wcsprintf.c (see above).
+
+* User manual
+
+  - Updated the section on thread-safety in light of the above changes
+    to wcsprintf and wcserr.
+
+
+WCSLIB version 8.8 (2026/05/22)
+-------------------------------
+
+* C library
+
+  - In tabini(), persuant to the previous revision, when checking that
+    the total number of elements in the coordinate array does not exceed
+    INT_MAX, we need to allow for the possibility that K[m] == 0 for all
+    m, meaning that the axis lengths are as yet unknown.  Reported by
+    Thomas Robitaille with patch.
+
+
+WCSLIB version 8.7 (2026/05/11)
+-------------------------------
+
+The changes in this release were prompted almost exclusively by
+Anthropic's Claude Code AI static code analysis tool.  Rob Seaman ran
+it on WCSLIB 8.6 and, under his supervision, Claude produced a detailed
+report of WCSLIB's shortcomings and a summary of its historical
+development.
+
+In addition to its own analysis, Claude Code relied heavily on three
+other static code analysis tools: scan-build and clang-tidy from LLVM
+22.1.2, and cppcheck 2.20.0.  In fact, clang-tidy made the majority of
+change suggestions, which prompted me to install a slightly older
+version, LLVM 20.1.2, and run it myself.  Curiously, scan-build, which
+is said to be the most thorough, produced a clean result.  cppcheck
+found a few issues that were missed by the others.
+
+Claude Code did a pretty good job of summarising the often tediously
+nit-picky output of the static analysers, and also in constructing a
+history of WCSLIB's code development from the RCS revisions.
+
+This exercise resulted in the changes to the C library detailed below.
+Mostly they could be described as armour-plating, if not gold-plating.
+However, there was one bug and several instances of potential memory-
+related issues, mostly in seldom-taken paths through the code such as
+error processing.
+
+* C library
+
+  - In wcshdo_util(), a static helper function for wcshdo(), fixed a
+    bug that would have caused the keycomment to be truncated to a
+    single character when keyvalues exceeded 20 characters.
+
+  - Fixed various memory-related issues, such as potential memory leaks
+    on error return, potentially dereferencing null pointers, incorrect
+    handling of failed calls to realloc(), etc. in wcsprt(), wcssub(),
+    wcstrim(), wcspcx(), disset(), discpy(), diswarp(), and various of
+    the static distortions helper functions.
+
+    In wcsprintf(), call va_end() if memory allocation fails in order
+    to release the memory allocated by va_start().
+
+    In wcserr_clear(), ensure that errp is non-NULL before dereferencing
+    it.
+
+    In tabini(), check that the total number of elements in the
+    coordinate array does not exceed INT_MAX.
+
+  - In prj.c and sph.c, removed the hand-coded copysign() macro, which
+    is now provided by C99.
+
+  - In wcsinit(), lininit(), and disinit(), check that the value
+    provided for naxis is not too large.  Negative values also now
+    return WCSERR_BAD_PARAM, LINERR_BAD_PARAM (new), and
+    DISERR_BAD_PARAM rather than WCSERR_MEMORY, etc.
+
+    In conjunction with the above, global variables that record various
+    limits are now declared in a new header file, wcslimits.h.  Their
+    values are set in wcs.c, including a limit of 31 for NAXIS and also
+    the default limits for the number of PVi_ma, PSi_ma, DPja, and DQia
+    keywords, which may be changed.
+
+    In cylfix(), use the maximum value of NAXIS from wcslimits.h.
+
+  - Throughout the C library, replaced use of strcpy() (200 occurrences)
+    and strcat() (23 occurrences) with strncpy(), and sprintf() (202
+    occurrences) with snprintf().  These mostly related to in-memory
+    copying of string constants, etc., which are inherently well-
+    constrained.
+
+    Likewise, in wcsprintf() and wcsfprintf(), replaced use of
+    vsprintf() with vsnprintf().
+
+    Likewise for the test suite.
+
+  - In wcsmath.h, parenthesised three macro definitions to ensure the
+    correct order of precedence when used in arithmetic expressions.
+
+  - Addressed, by way of appeasement, a plethora of inconsequential
+    warnings from clang-tidy relating to putative "bug-prone"
+    constructs, none of which were bugs, in the following categories:
+     - bugprone-branch-clone
+     - bugprone-implicit-widening-of-multiplication-result
+     - bugprone-integer-division
+     - bugprone-multi-level-implicit-pointer-conversion
+     - bugprone-narrowing-conversions
+     - bugprone-not-null-terminated-result
+     - bugprone-suspicious-string-compare
+     - bugprone-switch-missing-default-case
+    The following categories were disabled:
+     - bugprone-assignment-in-if-condition  [I drew the line here!]
+     - bugprone-easily-swappable-parameters [can't change API!]
+     - bugprone-reserved-identifier         [only in sundazel]
+
+  - In the test suite, replaced the remaining heritage K&R-style
+    variable declarations with intermingled ANSI-style.  Likewise for
+    the last few surviving K&R-style function prototypes.
+
+* Fortran wrappers
+
+  - Replaced a single use of sprintf(), in keyget_(), with snprintf().
+
+* PGSBOX
+
+  - In cpgsbox() and cpglbox(), replaced use of strcpy() with strncpy(),
+    and sprintf() with snprintf().
+
+    Likewise for test program cpgtest.
+
+* Utilities
+
+  - Replaced use of strcpy() with strncpy(), and sprintf() with
+    snprintf().
+
+* Installation
+
+  - Added rules to invoke clang-tidy (for code development).
+
+* User manual
+
+  - Documentation generation moved to Doxygen 1.17.0 (was 1.16.0).
+    While the Doxygen bug reported in WCSLIB 8.5 has now been fixed,
+    the makefile patch has been left in place for the time being.
+
+
+WCSLIB version 8.6 (2026/03/30)
+-------------------------------
+
+* C library
+
+  - In linx2p(), replaced two uses of goto statements to work around an
+    apparent compiler bug.  Reported by Cyril Richard.
+
+* PGSBOX
+
+  - PGSBOX now accounts for the possibility that the coordinate system
+    is not defined outside the frame.  Previously this was important for
+    determining axis crossings and hence axis labelling.  However, it is
+    not valid for -TAB coordinates in FITS for which extrapolation is
+    strictly limited to half a pixel.
+
+* User manual
+
+  - Documentation generation moved to Doxygen 1.16.0 (was 1.15.0).
+    While the Doxygen bug reported in version 8.5 has now been fixed,
+    the makefile patch has been left in place for the time being.
+
+
+WCSLIB version 8.5 (2025/12/06)
+-------------------------------
+
+WCSLIB's RCS version files are now included in the distribution thereby
+providing a documented history of all changes made since v1.0.  They
+will be found in RCS subdirectories in each code directory.  A small
+number of discontinued files are preserved with their RCS version files
+having a ',x' suffix instead of ',v'.
+
+* C library
+
+  - In linp2x(), quarantine NaN elements of the pixel coordinate vector
+    from infecting non-NaN elements in the case where the PCij matrix is
+    diagonal (noting that zero * NaN = NaN).  Likewise in linx2p().
+    Reported by Thomas Robitaille with patch.
+
+  - Quelled nuisance compiler warnings in wcspih() and wcsbth().
+
+* User manual
+
+  - Documentation generation moved to Doxygen 1.15.0 (was 1.12.0).
+    The makefile patches doxygen.sty as per my Doxygen bug report 11881.
+
+
+WCSLIB version 8.4 (2024/10/29)
+-------------------------------
+
+* C library
+
+  - Fixed some problems in wcs_chksum() and changed wcs_fletcher32() to
+    conform to the standard computation.
+
+  - New test program, twcs_pthread.
+
+* User manual
+
+  - Documentation generation moved to doxygen 1.12.0 (was 1.10.0).
+
+
+WCSLIB version 8.3 (2024/05/14)
+-------------------------------
+
+* C library
+
+  - Until now, wcsset() always operated unconditionally - the wcsprm
+    struct was set or reset regardless of its current state.  Likewise
+    the various *set() functions for the other structs.
+
+    However, in some situations, particularly in threaded applications,
+    it is desirable to have wcsset(), etc., check the state of the
+    struct and return immediately if it has already been set.  This may
+    now be accomplished by setting wcsprm::flag == 1 (instead of 0)
+    before calling wcsset().  Likewise for the other structs.  This sets
+    a "bypass" flag within the struct itself.
+
+  - A new function, wcsenq(), queries the state of the wcsprm struct,
+    specifically whether WCSLIB is managing its memory, whether the
+    struct has been set, whether or not it is in bypass mode, and
+    whether it is self-consistent.  There are corresponding functions
+    for the other structs: celenq(), disenq(), linenq(), prjenq(),
+    spcenq(), and tabenq().  Please refer to the WCSLIB manual.
+
+  - In the C test suite, modified twcs to test wcsenq() and also
+    wcsset() in bypass mode.
+
+  - Quelled nuisance compiler warnings in wcsbth(), wcspih(), wcsp2s(),
+    and wcshdo().
+
+* Fortran wrappers
+
+  - Interprocedural Link Time Optimization (LTO), when used with the
+    strict compiler options required by some Linux distributions, may
+    place more stringent requirements on mixing code written in
+    different languages.  Specifically, as far as WCSLIB is concerned,
+    this applies for Fortran calling C (or vice versa) where the
+    function parameter list includes a character variable.
+
+    It is important to note that the existing Fortran wrappers work as
+    they did before, with or without LTO, that issues only arise when
+    strict LTO compiler options are enabled, and that wrappers without
+    a character argument are unaffected.
+
+    Fortran 2003 introduced the "language-binding-spec" attribute using
+    the keyword BIND.  The INTERFACE block for a procedure may be given
+    the BIND(C) attribute to specify the interface of an external,
+    interoperable C function.  Use of this BIND(C) attribute is now
+    virtually mandated by LTO (with said strict compiler options).
+
+    The WCSLIB Fortran wrappers are written in C, e.g. wcs_f.c, with a
+    Fortran-compliant interface, and these C functions are intended to
+    be called directly from Fortran applications.  Three options were
+    considered for achieving strict LTO compliance:
+
+      1) Require that all existing Fortran applications be modified to
+         conform to the Fortran 2003 language binding specification via
+         the addition of INTERFACE blocks bearing the BIND(C) attribute
+         for the existing wrappers.
+
+         This option is clearly untenable.
+
+      2) Rewrite the WCSLIB Fortran wrappers completely in Fortran 2003.
+
+         It seems that this option may be tenable as the BIND(C) spec
+         allows for C-equivalent derived types.  However, it would
+         require rewriting all of the wrappers, 5 kloc of C code, in
+         Fortran 2003 code that must directly manipulate the internals
+         of all of the WCSLIB structs.
+
+      3) Introduce a new layer of thin wrappers, written in Fortran
+         2003, that do nothing more than define the INTERFACE to the
+         existing wrappers written in C and then call them.
+         Essentially this extracts the changes required in option (1)
+         into a new set of wrappers.
+
+         This was the option chosen on the basis of simplicity - only
+         specific wrappers, namely those with character arguments, need
+         be rewrapped.  It also minimises WCSLIB's exposure to Fortran
+         2003, particularly for the sake of legacy astronomical packages
+         such as Miriad and AIPS.  Further, it admits the possibility of
+         the optional use of this extra layer of wrappers.
+
+    The new Fortran 2003 wrappers reside in the Fortran subdirectory in
+    files by the name of *_bindc.f90.  By default they are not compiled
+    and not used.  To use them, WCSLIB must be configure'd with the new
+    '--with-bindc' option.  This causes the new BIND(C) wrappers to be
+    compiled, and the names of the old wrappers to be changed, for
+    example from wcspih_() to wcspih_c().
+
+    LTO compile problems reported by Eli Schwartz, Gentoo maintainer.
+
+  - Added wrappers for celenq(), disenq(), linenq(), prjenq(), spcenq(),
+    tabenq(), and wcsenq().
+
+  - In the Fortran test suite, modified twcs to test WCSENQ and also
+    WCSSET in bypass mode.
+
+* PGSBOX
+
+  - Changes mirroring those described above for the Fortran wrappers,
+    the difference being that here we have a mix of C calling Fortran
+    (e.g. cpgsbox() calling PGSBOX) as well as Fortran calling C (e.g.
+    PGWCSL calling pgwcsl_c()).  As with the Fortran wrappers, the new
+    configure option, '--with-bindc', chooses whether to use the new
+    BIND(C) PGSBOX wrappers.
+
+* Installation
+
+  - Added '--with-bindc' as a new configure option (or BINDC=yes from
+    the environment) to signal the use of the new strictly LTO-compliant
+    Fortran wrappers.  See above.
+
+  - Modified 'configure' to report the version of gcc used.  Likewise,
+    for the 'show' rule in makedefs.
+
+* User manual
+
+  - Quelled a nuisance compiler warning in doxextr.
+
+  - Documentation generation moved to doxygen 1.10.0 (was 1.9.8).
+
+
 WCSLIB version 8.2.2 (2023/11/29)
 ---------------------------------
 
@@ -495,7 +892,7 @@ WCSLIB version 7.2 (2020/03/09)
 
 * Installation
 
-  - New configure option, --disable-shared, defeats generation of the
+  - New configure option, '--disable-shared', defeats generation of the
     sharable library.
 
 
@@ -3463,4 +3860,4 @@ WCSLIB version 1.0 (1995/01/31)
   Initial release.
 
 ------------------------------------------------------------------------
-$Id: CHANGES,v 8.2.1.3 2023/11/29 08:04:47 mcalabre Exp mcalabre $
+$Id: CHANGES,v 8.9 2026/06/18 13:00:04 mcalabre Exp $

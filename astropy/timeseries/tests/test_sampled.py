@@ -11,8 +11,7 @@ from astropy.tests.helper import assert_quantity_allclose
 from astropy.time import Time, TimeDelta
 from astropy.timeseries.periodograms import BoxLeastSquares, LombScargle
 from astropy.timeseries.sampled import TimeSeries
-from astropy.units import Quantity
-from astropy.units.core import UnitsWarning
+from astropy.units import Quantity, UnitsWarning
 from astropy.utils.data import get_pkg_data_filename
 
 INPUT_TIME = Time(["2016-03-22T12:30:31", "2015-01-21T12:30:32", "2016-03-22T12:30:40"])
@@ -406,37 +405,43 @@ def test_tess_astropy():
     expected = {
         (
             UnitsWarning,
-            "'BJD - 2457000, days' did not parse as fits unit: "
-            "At col 0, Unit 'BJD' not supported by the FITS standard.  "
-            "If this is meant to be a custom unit, define it with 'u.def_unit'. "
-            "To have it recognized inside a file reader or "
-            "other code, enable it with 'u.add_enabled_units'. For details, see "
-            "https://docs.astropy.org/en/latest/units/combining_and_defining.html",
+            (
+                "'BJD - 2457000, days' did not parse as fits unit: "
+                "At col 0, Unit 'BJD' not supported by the FITS standard.  "
+                "If this is meant to be a custom unit, define it with 'u.def_unit'. "
+                "To have it recognized inside a file reader or "
+                "other code, enable it with 'u.add_enabled_units'. For details, see "
+                "https://docs.astropy.org/en/latest/units/combining_and_defining.html"
+            ),
         ),
         (
             UnitsWarning,
-            "'e-/s' did not parse as fits unit: "
-            "At col 0, Unit 'e' not supported by the FITS standard.  "
-            "If this is meant to be a custom unit, define it with 'u.def_unit'. "
-            "To have it recognized inside a file reader or other code, "
-            "enable it with 'u.add_enabled_units'. For details, see "
-            "https://docs.astropy.org/en/latest/units/combining_and_defining.html",
+            (
+                "'e-/s' did not parse as fits unit: "
+                "At col 0, Unit 'e' not supported by the FITS standard.  "
+                "If this is meant to be a custom unit, define it with 'u.def_unit'. "
+                "To have it recognized inside a file reader or other code, "
+                "enable it with 'u.add_enabled_units'. For details, see "
+                "https://docs.astropy.org/en/latest/units/combining_and_defining.html"
+            ),
         ),
         (
             UnitsWarning,
-            "'pixels' did not parse as fits unit: "
-            "At col 0, Unit 'pixels' not supported by the FITS standard. "
-            "Did you mean pixel? "
-            "If this is meant to be a custom unit, define it with 'u.def_unit'. "
-            "To have it recognized inside a file "
-            "reader or other code, enable it with 'u.add_enabled_units'. For details, "
-            "see https://docs.astropy.org/en/latest/units/combining_and_defining.html",
+            (
+                "'pixels' did not parse as fits unit: "
+                "At col 0, Unit 'pixels' not supported by the FITS standard. "
+                "Did you mean pixel? "
+                "If this is meant to be a custom unit, define it with 'u.def_unit'. "
+                "To have it recognized inside a file "
+                "reader or other code, enable it with 'u.add_enabled_units'. For details, "
+                "see https://docs.astropy.org/en/latest/units/combining_and_defining.html"
+            ),
         ),
         (UserWarning, "Ignoring 815 rows with NaN times"),
     }
-    assert (
-        unique_warnings == expected
-    ), f"Got some unexpected warnings\n{unique_warnings - expected}"
+    assert unique_warnings == expected, (
+        f"Got some unexpected warnings\n{unique_warnings - expected}"
+    )
 
     assert timeseries["time"].format == "isot"
     assert timeseries["time"].scale == "tdb"

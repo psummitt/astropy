@@ -1,8 +1,10 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
+import io
 import warnings
 
 import numpy as np
+import numpy.testing as npt
 import pytest
 
 from astropy import units as u
@@ -13,11 +15,23 @@ from astropy.table.index import SlicedIndex, get_index
 from astropy.table.soco import SCEngine
 from astropy.table.sorted_array import SortedArray
 from astropy.time import Time
-from astropy.utils.compat.optional_deps import HAS_SORTEDCONTAINERS
+from astropy.utils.compat.optional_deps import HAS_H5PY, HAS_SORTEDCONTAINERS
+from astropy.utils.exceptions import AstropyDeprecationWarning, AstropyWarning
 
 from .test_table import SetupData
 
-available_engines = [BST, SortedArray]
+# BST is deprecated but remains tested until it is removed.
+available_engines = [
+    pytest.param(
+        BST,
+        id="BST",
+        marks=pytest.mark.filterwarnings(
+            "ignore:The BST class is deprecated:astropy.utils.exceptions.AstropyDeprecationWarning"
+        ),
+    ),
+    SortedArray,
+]
+NATIVE_INT_NAME = np.array(0).dtype.name
 
 if HAS_SORTEDCONTAINERS:
     available_engines.append(SCEngine)
@@ -43,10 +57,20 @@ def main_col(request):
 
 
 def assert_col_equal(col, array):
+    __tracebackhide__ = True
     if isinstance(col, Time):
         assert np.all(col == Time(array, format="jyear"))
     else:
         assert np.all(col == col.__class__(array))
+
+
+def assert_tables_equal(t1: Table, t2: Table) -> None:
+    # Check table colnames equal and values equal
+    vals_eq = t1.values_equal(t2)  # this raises if colnames not equal
+    for col_eq in vals_eq.itercols():
+        npt.assert_equal(col_eq, True)
+
+    assert t1.meta == t2.meta
 
 
 @pytest.mark.usefixtures("table_types")
@@ -417,12 +441,12 @@ class TestIndex(SetupData):
         assert_col_equal(t2["a"], [1, 4, 2])
         t2 = t.loc[self.make_val(3) : self.make_val(5)]  # range search
         assert_col_equal(t2["a"], [3, 4, 5])
-        t2 = t.loc["b", 5.0:7.0]
+        t2 = t.loc.with_index("b")[5.0:7.0]
         assert_col_equal(t2["b"], [5.1, 6.2, 7.0])
         # search by sorted index
         t2 = t.iloc[0:2]  # two smallest rows by column 'a'
         assert_col_equal(t2["a"], [1, 2])
-        t2 = t.iloc["b", 2:]  # exclude two smallest rows in column 'b'
+        t2 = t.iloc.with_index("b")[2:]  # exclude two smallest rows in column 'b'
         assert_col_equal(t2["b"], [5.1, 6.2, 7.0])
 
         for t2 in (t.loc[:], t.iloc[:]):
@@ -555,6 +579,40 @@ def test_get_index():
         get_index(t, names=None, table_copy=None)
 
 
+@pytest.mark.parametrize("table_type", [Table, QTable])
+def test_index_loc_with_quantity(engine, table_type):
+    t = table_type()
+    t["a"] = [3, 1, 2] * u.m
+    t["b"] = [1, 2, 3]
+    t.add_index("a", engine=engine)
+
+    unit = u.m if table_type is QTable else 1
+    assert tuple(t.loc[1 * unit]) == (1 * unit, 2)
+    assert np.all(t.loc_indices[[1 * unit, 3 * unit]] == [1, 0])
+    assert tuple(t.iloc[1]) == (2 * unit, 3)
+    for loc in (t.loc, t.iloc):
+        t_loc = loc[:]
+        assert len(t_loc) == 3
+        assert np.all(t_loc["a"] == [1, 2, 3] * unit)
+        assert np.all(t_loc["b"] == [2, 3, 1])
+
+
+def test_index_loc_with_string(engine):
+    t = Table()
+    t["a"] = ["z", "a", "m"]
+    t["b"] = [1, 2, 3]
+    t.add_index("a", engine=engine)
+
+    assert tuple(t.loc["a"]) == ("a", 2)
+    assert np.all(t.loc_indices[["a", "z"]] == [1, 0])
+    assert tuple(t.iloc[1]) == ("m", 3)
+    for loc in (t.loc, t.iloc):
+        t_loc = loc[:]
+        assert len(t_loc) == 3
+        assert np.all(t_loc["a"] == ["a", "m", "z"])
+        assert np.all(t_loc["b"] == [2, 3, 1])
+
+
 def test_table_index_time_warning(engine):
     # Make sure that no ERFA warnings are emitted when indexing a table by
     # a Time column with a non-default time scale
@@ -604,3 +662,517 @@ def test_hstack_qtable_table():
 def test_index_slice_exception():
     with pytest.raises(TypeError, match="index_slice must be tuple or slice"):
         SlicedIndex(None, None)
+
+
+@pytest.fixture(scope="module")
+def simple_table():
+    """Simple table with an index on column 'a'."""
+    t = Table()
+    t["a"] = [3, 1, 2, 3]
+    t["b"] = ["x", "y", "z", "w"]
+    t.add_index("a")
+    return t
+
+
+@pytest.mark.parametrize("key", [None, "a"])
+@pytest.mark.parametrize(
+    "item,length,cls",
+    [
+        (slice(0, 0), 0, Table),
+        ([], 0, Table),
+        ([1], 1, Table),
+        ([1, 3], 3, Table),
+        (np.array([]), 0, Table),
+        (np.array([1]), 1, Table),
+        (3, 2, Table),  # scalar index with multiple rows
+        (1, None, Row),  # scalar index with single row
+    ],
+)
+def test_index_zero_slice_or_sequence_or_scalar(simple_table, key, item, length, cls):
+    """Test that indexing with various types gives the expected result.
+
+    Tests fix for #18037.
+    """
+    loc = simple_table.loc.with_index(key) if key is not None else simple_table.loc
+    tloc = loc[item]
+    assert isinstance(tloc, cls)
+    assert tloc.colnames == simple_table.colnames
+
+    rows = simple_table.loc_indices[item]
+    if cls is Table:
+        assert len(tloc) == length
+        assert len(rows) == length
+
+
+@pytest.mark.parametrize(
+    "method,item",
+    [
+        ("loc", (2, 5)),
+        ("iloc", 1),
+        ("loc_indices", (2, 5)),
+    ],
+)
+def test_index_id_item_deprecation_and_with_index(method, item):
+    """t.loc/iloc/loc_indices[index_id, item] raises a deprecation warning.
+
+    Also test that these methods
+    """
+    t = Table()
+    t["a"] = [1, 2, 3]
+    t["b"] = [4, 5, 6]
+    t["c"] = ["x", "y", "z"]
+    index_id = ("a", "b")
+    t.add_index(index_id)
+    prop = getattr(t, method)
+    # Test calling like t.loc.with_index("a", "b") and t.loc.with_index(("a", "b")).
+    out_call_1 = prop.with_index(*index_id)[item]
+    out_call_2 = prop.with_index(index_id)[item]
+    with pytest.warns(
+        AstropyDeprecationWarning,
+        match=r"Calling `Table.loc/iloc/loc_indices\[index_id, item\]`",
+    ):
+        out_depr = prop[index_id, item]
+    assert type(out_depr) is type(out_call_1)
+    assert out_depr == out_call_1
+    assert type(out_call_1) is type(out_call_2)
+    assert out_call_1 == out_call_2
+
+
+def test_engine_type_error():
+    t = Table()
+    t["a"] = [1, 2]
+    t["b"] = [3, 4]
+    with pytest.raises(
+        TypeError,
+        match=r"engine must be an Engine class or instance, got 'b' instead.",
+    ):
+        t.add_index("a", "b")  # Easy mistake, too bad engine= is not keyword-only
+
+
+@pytest.mark.parametrize(
+    "masked",
+    [pytest.param(False, id="raw-array"), pytest.param(True, id="masked array")],
+)
+def test_nd_columun_as_index(masked):
+    # see https://github.com/astropy/astropy/issues/13292
+    # and https://github.com/astropy/astropy/pull/16360
+    t = Table()
+    data = np.arange(0, 6)
+    if masked:
+        data = np.ma.masked_inside(data, 2, 4)
+    t.add_column(data.reshape(3, -1), name="arr")
+    with pytest.raises(
+        ValueError, match="Multi-dimensional column 'arr' cannot be used as an index."
+    ):
+        t.add_index("arr")
+
+
+def test_indices_read_unknown_engine():
+    lines = [
+        "# %ECSV 1.0",
+        "# ---",
+        "# datatype:",
+        f"# - {{name: a, datatype: {NATIVE_INT_NAME}}}",
+        f"# - {{name: __index__, datatype: {NATIVE_INT_NAME}}}",
+        "# meta: !!omap",
+        "# - __table_indices__:",
+        "#     indices:",
+        "#     - colnames: [a]",
+        "#       engine: Foo",
+        "#       index_colname: __index__",
+        "#       unique: true",
+        "#     primary_key: [a]",
+        "# schema: astropy-2.0",
+        "a __index__",
+        "1 0",
+        "3 2",
+        "2 1",
+    ]
+    text = "\n".join(lines)
+
+    with pytest.warns(
+        AstropyWarning,
+        match=r"Unknown index engine 'Foo', creating index using SortedArray engine",
+    ):
+        t = Table.read(text, format="ecsv")
+    # a==3 at row 1
+    assert t.loc_indices[1] == 0
+    assert t.loc_indices[3] == 1
+    assert t.loc_indices[2] == 2
+
+
+def test_indices_serialization_unique_representation():
+    t = Table()
+    t["a"] = [1, 3, 2]
+    t.add_index("a", unique=True)
+    out = io.StringIO()
+    t.write(out, format="ecsv", write_indices=True)
+    assert out.getvalue().splitlines() == [
+        "# %ECSV 1.0",
+        "# ---",
+        "# datatype:",
+        f"# - {{name: a, datatype: {NATIVE_INT_NAME}}}",
+        f"# - {{name: __index__, datatype: {NATIVE_INT_NAME}}}",
+        "# meta: !!omap",
+        "# - __table_indices__:",
+        "#     indices:",
+        "#     - colnames: [a]",
+        "#       index_colname: __index__",
+        "#       unique: true",
+        "#     primary_key: [a]",
+        "# schema: astropy-2.0",
+        "a __index__",
+        "1 0",
+        "3 2",
+        "2 1",
+    ]
+    t2 = Table.read(out.getvalue(), format="ecsv")
+    assert t2.indices[0].data.unique is True
+
+
+@pytest.mark.parametrize("engine", [SortedArray, SCEngine])
+def test_indices_serialization_representation_single(engine):
+    """Add explicit test of serialization representation for single-index case.
+
+    The `primary` key is not included in this case.
+    """
+    t = Table()
+    t["a"] = [1, 3, 2]
+    t.add_index("a", engine=engine)
+    out = io.StringIO()
+    t.write(out, format="ecsv", write_indices=True)
+    exp = [
+        "# %ECSV 1.0",
+        "# ---",
+        "# datatype:",
+        f"# - {{name: a, datatype: {NATIVE_INT_NAME}}}",
+        f"# - {{name: __index__, datatype: {NATIVE_INT_NAME}}}",
+        "# meta: !!omap",
+        "# - __table_indices__:",
+        "#     indices:",
+        "#     - colnames: [a]",
+        "#       index_colname: __index__",
+        "#     primary_key: [a]",
+        "# schema: astropy-2.0",
+        "a __index__",
+        "1 0",
+        "3 2",
+        "2 1",
+    ]
+
+    if engine is SCEngine:
+        exp.insert(9, "#       engine: SCEngine")
+
+    assert out.getvalue().splitlines() == exp
+
+
+def test_indices_serialization_representation_multiple():
+    """Add explicit test of serialization representation for single-index case.
+
+    This includes the `primary` key and a collision.
+    """
+    t = Table()
+    t["a"] = [1, 3, 2]
+    t["__index__1"] = [5, 4, 3]
+    t.add_index(["a", "__index__1"])
+    t.add_index("a")
+    out = io.StringIO()
+    t.write(out, format="ecsv", write_indices=True)
+
+    exp = [
+        "# %ECSV 1.0",
+        "# ---",
+        "# datatype:",
+        f"# - {{name: a, datatype: {NATIVE_INT_NAME}}}",
+        f"# - {{name: __index__1, datatype: {NATIVE_INT_NAME}}}",
+        f"# - {{name: __index__, datatype: {NATIVE_INT_NAME}}}",
+        f"# - {{name: __index__2, datatype: {NATIVE_INT_NAME}}}",
+        "# meta: !!omap",
+        "# - __table_indices__:",
+        "#     indices:",
+        "#     - colnames: [a, __index__1]",
+        "#       index_colname: __index__",
+        "#     - colnames: [a]",
+        "#       index_colname: __index__2",
+        "#     primary_key: [a, __index__1]",
+        "# schema: astropy-2.0",
+        "a __index__1 __index__ __index__2",
+        "1 5 0 0",
+        "3 4 2 2",
+        "2 3 1 1",
+    ]
+    assert out.getvalue().splitlines() == exp
+
+
+@pytest.mark.parametrize("dtype", [np.int16, np.float32, np.int64, np.float64])
+def test_indices_roundtrip_various_dtypes(dtype):
+    """Test that serialization round-trip works for various index dtypes."""
+    t = Table()
+    t["a"] = np.array([1, 3, 2], dtype=dtype)
+    t["b"] = np.array([5, 6, 7], dtype=dtype)
+    t.add_index("a")
+    t.add_index(["a", "b"])
+    out = io.StringIO()
+    t.write(out, format="ecsv", write_indices=True)
+    t2 = Table.read(out.getvalue(), format="ecsv")
+
+    assert_tables_equal(t, t2)
+    assert_indices_equal(t, t2, [("a",), ("a", "b")])
+
+
+@pytest.mark.parametrize("single_index", [True, False])
+@pytest.mark.parametrize("engine", [SortedArray, SCEngine])
+@pytest.mark.parametrize(
+    "fmt, read_kwargs, write_kwargs",
+    [
+        pytest.param("ecsv", {}, {}, id="ecsv"),
+        pytest.param("fits", {}, {"astropy_native": True}, id="fits"),
+        pytest.param("hdf5", {"serialize_meta": True, "path": "root"}, {}, id="hdf5"),
+    ],
+)
+def test_indices_roundtrip_through_file(
+    single_index, fmt, read_kwargs, write_kwargs, engine, tmp_path
+):
+    if single_index and fmt != "ecsv":
+        # Save a few compute cycles, since single_index is really impacting just the
+        # serialization data and the engine and fmt don't matter.
+        pytest.skip()
+
+    if not HAS_H5PY and fmt == "hdf5":
+        pytest.skip("hdf5 tests require h5py")
+
+    t = QTable()
+    t["a"] = Time([1, 3, 2, 2], format="cxcsec")
+    t["b"] = [3, 2, 2, 1]
+    t["__index__"] = [3, 1, 4, 2]  # Force a collision
+    indices_colnames = [
+        ["a"],
+        ["b", "a"],
+        ["a", "b", "__index__"],
+        ["__index__"],
+    ]
+    if single_index:
+        indices_colnames = indices_colnames[:1]
+
+    for colnames in indices_colnames:
+        t.add_index(colnames, engine=engine)
+
+    path = tmp_path / f"out.{fmt}"
+    t.write(path, format=fmt, write_indices=True, **read_kwargs)
+
+    t2 = QTable.read(path, format=fmt, **write_kwargs)
+    if fmt == "fits":
+        # FITS does not round-trip the format
+        t2["a"].format = "cxcsec"
+
+    assert_tables_equal(t, t2)
+    assert_indices_equal(t, t2, indices_colnames)
+
+
+def assert_indices_equal(t, t2, indices_colnames):
+    assert len(t.indices) == len(t2.indices)
+    assert t.primary_key == t2.primary_key
+
+    for colnames in indices_colnames:
+        index = t.indices[colnames]
+        index2 = t2.indices[colnames]
+        assert index.id == index2.id
+        # Table rows sorted in index order
+        assert_tables_equal(
+            t.iloc.with_index(colnames)[:], t2.iloc.with_index(colnames)[:]
+        )
+        # Check that the engine row_index column/list is identical
+        assert np.all(index.data.sorted_data() == index2.data.sorted_data())
+        # Check engine items as a list of pairs of the form
+        # [(key, [row 1, row 2, ...]), ...].
+        assert index.data.items() == index2.data.items()
+
+        key0 = tuple(t.iloc.with_index(colnames)[0][colnames])
+        key1 = tuple(t.iloc.with_index(colnames)[-1][colnames])
+        assert t.loc.with_index(colnames)[key0] == t2.loc.with_index(colnames)[key0]
+        assert t.loc.with_index(colnames)[key1] == t2.loc.with_index(colnames)[key1]
+        assert (
+            t.loc_indices.with_index(colnames)[key0]
+            == t2.loc_indices.with_index(colnames)[key0]
+        )
+        assert (
+            t.loc_indices.with_index(colnames)[key1]
+            == t2.loc_indices.with_index(colnames)[key1]
+        )
+
+
+@pytest.mark.parametrize("index_first", [True, False])
+def test_slice_an_indexed_table(index_first):
+    """Test slicing a table that is already indexed.
+
+    Test of fix for https://github.com/astropy/astropy/issues/10732.
+
+    #10732 is the case index_first=True, but also test slicing first (index_first=False)
+    since we're at it.
+    """
+    t = Table()
+    t["a"] = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+    t["b"] = [0, 0, 0, 0, 0, 1, 1, 1, 1, 1]
+    t["c"] = ["e", "f", "g", "h", "i", "j", "k", "a", "b", "c"]
+
+    if index_first:
+        t.add_index("a")
+        t.add_index(["b", "c"])
+        ts = t[::2]
+    else:
+        ts = t[::2]
+        ts.add_index("a")
+        ts.add_index(["b", "c"])
+
+    assert ts.pformat() == [
+        " a   b   c ",
+        "--- --- ---",
+        "  9   0   e",
+        "  7   0   g",
+        "  5   0   i",
+        "  3   1   k",
+        "  1   1   b",
+    ]
+    # Index access works
+    assert str(ts.loc[5]).splitlines() == [
+        " a   b   c ",
+        "--- --- ---",
+        "  5   0   i",
+    ]
+
+    # Remove row 2 (a==5), check index access still works
+    ts.remove_row(2)
+    assert ts.pformat() == [
+        " a   b   c ",
+        "--- --- ---",
+        "  9   0   e",
+        "  7   0   g",
+        "  3   1   k",
+        "  1   1   b",
+    ]
+    assert str(ts.loc[1]).splitlines() == [
+        " a   b   c ",
+        "--- --- ---",
+        "  1   1   b",
+    ]
+
+    # Remove row 2 (now a==3), check index access still works
+    ts.remove_row(2)
+    assert ts.pformat() == [
+        " a   b   c ",
+        "--- --- ---",
+        "  9   0   e",
+        "  7   0   g",
+        "  1   1   b",
+    ]
+    assert str(ts.loc[7]).splitlines() == [
+        " a   b   c ",
+        "--- --- ---",
+        "  7   0   g",
+    ]
+
+    # Make sure primary index and secondary index look right (with original=True)
+    assert str(ts.indices[0]).splitlines() == [
+        "<SlicedIndex original=True index=<Index columns=('a',) data=<SortedArray length=3>",
+        " a  rows",
+        "--- ----",
+        "  1    2",
+        "  7    1",
+        "  9    0>>",
+    ]
+    assert str(ts.indices[1]).splitlines() == [
+        "<SlicedIndex original=True index=<Index columns=('b', 'c') data=<SortedArray length=3>",
+        " b   c  rows",
+        "--- --- ----",
+        "  0   e    0",
+        "  0   g    1",
+        "  1   b    2>>",
+    ]
+
+
+def test_unique_indices_after_multicol_index_slice():
+    """Test that table indices after slicing are correct.
+
+    This tests code in Table._new_from_slice() that ensures uniqueness of table index
+    objects when slicing (via slice, ndarray, list etc) a table with a multi-column
+    index.
+    """
+    t = Table()
+    t["a"] = [2, 3]
+    t["b"] = [3, 5]
+    t.add_index(["a", "b"])
+    t2 = t[:1]
+    assert len(t2.indices) == 1  # without fix would be 2, both with id ("a", "b").
+    assert t2.indices[0].id == ("a", "b")
+
+
+def test_index_not_corrupted_on_failed_row_assignment(engine):
+    """Regression test: index must survive a failed row assignment.
+
+    When ``table[row] = values`` raises because one of the values is
+    incompatible with its column dtype, the table index was left in an
+    inconsistent state.  Specifically, ``Index.replace`` removed the
+    existing key from the sorted array *before* trying to insert the new
+    one; if the insert failed the old key was permanently gone even though
+    the column data was never changed.
+
+    After the fix the index must round-trip correctly: the original key is
+    still findable and no ghost key is present.  The test is run for all
+    three available index engines (BST, SortedArray, SCEngine).
+    """
+    t = Table({"x": [1, 2, 3], "y": [4, 5, 6]})
+    t.add_index("y", engine=engine)
+
+    with pytest.raises(ValueError):
+        # "bad" is not convertible to the int64 dtype of column y
+        t[0] = (99, "bad")
+
+    # Data must be unchanged
+    assert t[0]["x"] == 1
+    assert t[0]["y"] == 4
+
+    # Index must still find the original key
+    result = t.loc[4]
+    assert result["x"] == 1
+    assert result["y"] == 4
+
+    # No ghost entry for the attempted new value
+    with pytest.raises(KeyError):
+        t.loc[99]
+
+
+@pytest.mark.parametrize("table_type", [Table, QTable])
+def test_loc_range_with_duplicate_index_values(engine, table_type):
+    """Regression test: a range query must return every row whose value equals
+    an inclusive bound, even when that value is duplicated in the index.
+
+    The default ``SortedArray`` engine previously kept only the first matching
+    row, so e.g. ``t.loc[1:2]`` silently dropped all but one of the ``2`` rows.
+    """
+    t = table_type()
+    t["a"] = [3, 2, 2, 3, 1, 2]
+    t["b"] = [30, 20, 21, 31, 10, 22]
+    t.add_index("a", engine=engine)
+
+    assert sorted(t.loc[1:2]["b"].tolist()) == [10, 20, 21, 22]
+    assert sorted(t.loc[2:2]["b"].tolist()) == [20, 21, 22]
+    assert sorted(t.loc[2:3]["b"].tolist()) == [20, 21, 22, 30, 31]
+    assert sorted(t.loc[:]["b"].tolist()) == [10, 20, 21, 22, 30, 31]
+
+
+def test_loc_range_sorted_after_add_row(engine):
+    """Regression test: a range query must return rows in ascending key order,
+    also for rows added after the index was created.
+
+    The ``BST`` engine previously collected nodes in node-right-left order,
+    so after ``add_row`` the tree was no longer a degenerate chain and
+    ``t.loc[lower:upper]`` returned rows in scrambled order.
+    """
+    t = Table([[1, 5, 9], [10, 50, 90]], names=("a", "b"))
+    t.add_index("a", engine=engine)
+    for a, b in [(7, 70), (3, 30), (8, 80), (2, 20), (6, 60), (4, 40)]:
+        t.add_row((a, b))
+
+    assert t.loc[2:8]["a"].tolist() == [2, 3, 4, 5, 6, 7, 8]
+    assert t.loc[2:8]["b"].tolist() == [20, 30, 40, 50, 60, 70, 80]
+    assert t.loc[:]["a"].tolist() == [1, 2, 3, 4, 5, 6, 7, 8, 9]

@@ -1,6 +1,5 @@
 # Licensed under a 3-clause BSD style license - see PYFITS.rst
 
-import sys
 import warnings
 
 import numpy as np
@@ -48,11 +47,8 @@ class TestChecksumFunctions(BaseChecksumTests):
             assert "CHECKSUM" in hdul[0].header
             assert "DATASUM" in hdul[0].header
 
-            if not sys.platform.startswith("win32"):
-                # The checksum ends up being different on Windows, possibly due
-                # to slight floating point differences
-                assert hdul[0].header["CHECKSUM"] == "ZHMkeGKjZGKjbGKj"
-                assert hdul[0].header["DATASUM"] == "4950"
+            assert hdul[0].header["CHECKSUM"] == "ZHMkeGKjZGKjbGKj"
+            assert hdul[0].header["DATASUM"] == "4950"
 
     def test_scaled_data(self):
         with fits.open(self.data("scale.fits")) as hdul:
@@ -130,8 +126,7 @@ class TestChecksumFunctions(BaseChecksumTests):
                     assert hdul[idx].header["DATASUM"] == checksums[idx][1]
 
     def test_groups_hdu_data(self):
-        imdata = np.arange(100.0)
-        imdata.shape = (10, 1, 1, 2, 5)
+        imdata = np.arange(100.0).reshape((10, 1, 1, 2, 5))
         pdata1 = np.arange(10) + 0.1
         pdata2 = 42
         x = fits.hdu.groups.GroupData(
@@ -165,6 +160,39 @@ class TestChecksumFunctions(BaseChecksumTests):
             assert "DATASUM" in hdul[1].header
             assert hdul[1].header["DATASUM"] == "1062205743"
 
+    def test_checksum_byteswapped_table_spanning_multiple_chunks(self):
+        """
+        Regression test for #19990.
+
+        For a byte-swapped (little-endian) binary table large enough to be
+        checksummed in more than one chunk, the DATASUM is accumulated one
+        chunk at a time. Each chunk must be a whole number of 4-byte words,
+        otherwise the running 32-bit checksum is misaligned and the DATASUM
+        is valid in memory but fails to verify once the file is read back.
+        """
+        nrows = 8000
+        cols = fits.ColDefs(
+            [
+                fits.Column(name="a", format="J", array=np.arange(nrows, dtype="i4")),
+                fits.Column(name="b", format="D", array=np.linspace(0, 1, nrows)),
+                # An 11A column makes the row 4 + 8 + 11 = 23 bytes, which is
+                # not a multiple of 4, so the chunk boundaries fall mid-word.
+                fits.Column(name="s", format="11A", array=np.array(["xy"] * nrows)),
+            ]
+        )
+        tbhdu = fits.BinTableHDU.from_columns(cols)
+        # The table must span more than one checksum chunk to exercise the bug.
+        assert tbhdu.data.nbytes > 65536
+        tbhdu.add_checksum()
+        assert tbhdu.verify_checksum() == 1
+        assert tbhdu.verify_datasum() == 1
+        tbhdu.writeto(self.temp("tmp.fits"), overwrite=True)
+        with fits.open(self.temp("tmp.fits"), checksum=True) as hdul:
+            assert tbhdu.data.dtype.itemsize % 4 != 0
+            assert hdul[1].verify_checksum() == 1
+            assert hdul[1].verify_datasum() == 1
+            assert comparerecords(tbhdu.data, hdul[1].data)
+
     def test_variable_length_table_data(self):
         c1 = fits.Column(
             name="var",
@@ -185,6 +213,132 @@ class TestChecksumFunctions(BaseChecksumTests):
             assert "DATASUM" in hdul[1].header
             assert hdul[1].header["DATASUM"] == "1507485"
 
+    def test_variable_length_table_data2(self):
+        """regression test for #12119"""
+
+        time_data = [
+            np.array([2021, 1, 5, 10, 5, 30], dtype=np.uint16),
+            np.array([2021, 2, 19, 11, 19, 56], dtype=np.uint16),
+            np.array([2021, 4, 21, 16, 10, 24], dtype=np.uint16),
+            np.array([2021, 7, 22, 14, 42, 20], dtype=np.uint16),
+        ]
+        time_col = fits.Column(name="time", format="6I", array=time_data)
+
+        version_data = ["5.45.70", "5.45.71", "5.45.102", "5.50.109"]
+        version_col = fits.Column(name="Version", format="PA(8)", array=version_data)
+        columns = [time_col, version_col]
+
+        testfile = self.temp("tmp.fits")
+        tbl = fits.BinTableHDU.from_columns(columns, name="DemoBinTable")
+        hdul = fits.HDUList([fits.PrimaryHDU(), tbl])
+
+        # here checksum is computed from in-memory data, which was producing
+        # a wrong checksum and warnings when reading back the file
+        hdul.writeto(testfile, checksum=True)
+
+        testfile2 = self.temp("tmp2.fits")
+        with fits.open(testfile, checksum=True) as hdul:
+            datasum = hdul[1]._datasum
+            assert datasum == "2998821219"
+            checksum = hdul[1]._checksum
+            assert checksum == "7aC39YA37aA37YA3"
+
+            # so write again the file but here data was not loaded so checksum
+            # is computed directly from the file bytes, which was producing
+            # a correct checksum. Below we compare both to make sure they are
+            # consistent.
+            hdul.writeto(testfile2, checksum=True)
+
+        with fits.open(testfile2, checksum=True) as hdul:
+            assert datasum == hdul[1]._datasum
+            assert checksum == hdul[1]._checksum
+
+    def test_variable_length_table_data3(self):
+        """regression test for #14396"""
+        # This is testing specifically a scenario where the start of the heap
+        # is not aligned with 4-byte blocks (32 bit integers)
+
+        # By default, the heap starts immediately after the table, which is at
+        # NAXIS1 x NAXIS2, or byte 17 in this case. This is not aligned with
+        # the 4-byte blocks
+        testfile = self.temp("tmp.fits")
+        col1 = fits.Column(name="a", format="1A", array=["a"])
+        col2 = fits.Column(name="b", format="QD", array=[[1]])
+        tab = fits.BinTableHDU.from_columns(name="test", columns=[col1, col2])
+
+        tab.writeto(testfile, checksum=True)
+        with fits.open(testfile, checksum=True) as hdul:
+            assert hdul[1].header["DATASUM"] == "1648357376"
+            assert hdul[1].header["CHECKSUM"] == "2CoL4BnL2BnL2BnL"
+
+        # Here we force the heap to be aligned with the 4-byte blocks by using
+        # the THEAP keyword. This shows that we cannot always calculate DATASUM
+        # by simple concatenating the table data with the heap data.
+        testfile = self.temp("tmp2.fits")
+        col1 = fits.Column(name="a", format="1A", array=["a"])
+        col2 = fits.Column(name="b", format="QD", array=[[1]])
+        tab = fits.BinTableHDU.from_columns(name="test", columns=[col1, col2])
+        tab.header["THEAP"] = 20
+        tab.writeto(testfile, checksum=True)
+        with fits.open(testfile, checksum=True) as hdul:
+            assert hdul[1].header["DATASUM"] == "2716860416"
+            assert hdul[1].header["CHECKSUM"] == "jIAFjI19jI8CjI89"
+
+        # Here we take the previous table and just update the THEAP value to 17.
+        # This should put the heap in the same position as the first case and
+        # thus the DATASUM should be the same. However, the CHECKSUM should be
+        # different, as the header is different (it now has the THEAP keyword).
+        testfile = self.temp("tmp3.fits")
+        tab.header["THEAP"] = 17
+        tab.writeto(testfile, checksum=True)
+        with fits.open(testfile, checksum=True) as hdul:
+            assert hdul[1].header["DATASUM"] == "1648357376"
+            assert hdul[1].header["CHECKSUM"] == "jcdDjZZBjabBjYZB"
+
+    def test_small_heap(self):
+        """regression test for #18735"""
+        # Tests situations where the start of the heap is not aligned with
+        # 4-byte blocks (32 bit integers), and the size of our heap is smaller
+        # than 4 bytes
+        testfile = self.temp("tmp.fits")
+        col1 = fits.Column(name="a", format="1A", array=["a"])
+        tab = fits.BinTableHDU.from_columns(name="test", columns=[col1])
+
+        tab.writeto(testfile, checksum=True)
+        with fits.open(testfile, checksum=True) as hdul:
+            assert hdul[1].header["DATASUM"] == "1627389952"
+            assert hdul[1].header["CHECKSUM"] == "nNejoMchnMchnMch"
+
+        testfile = self.temp("tmp2.fits")
+        col1 = fits.Column(name="a", format="1A", array=["a"])
+        col2 = fits.Column(name="b", format="PB", array=[[1]])
+        tab = fits.BinTableHDU.from_columns(name="test", columns=[col1, col2])
+
+        tab.writeto(testfile, checksum=True)
+        with fits.open(testfile, checksum=True) as hdul:
+            assert hdul[1].header["DATASUM"] == "1644232704"
+            assert hdul[1].header["CHECKSUM"] == "4IIH7H9H4HGH4H9H"
+
+        testfile = self.temp("tmp3.fits")
+        col1 = fits.Column(name="a", format="1A", array=["a"])
+        col2 = fits.Column(name="b", format="PB", array=[[1, 2]])
+        tab = fits.BinTableHDU.from_columns(name="test", columns=[col1, col2])
+
+        tab.writeto(testfile, checksum=True)
+        with fits.open(testfile, checksum=True) as hdul:
+            assert hdul[1].header["DATASUM"] == "1661010432"
+            assert hdul[1].header["CHECKSUM"] == "4IHK6I9H4IGH4I9H"
+
+        testfile = self.temp("tmp4.fits")
+        col1 = fits.Column(name="a", format="1A", array=["a"])
+        col2 = fits.Column(name="b", format="PB", array=[[1, 2, 3]])
+        tab = fits.BinTableHDU.from_columns(name="test", columns=[col1, col2])
+
+        tab.writeto(testfile, checksum=True)
+        with fits.open(testfile, checksum=True) as hdul:
+            assert hdul[1].header["DATASUM"] == "1677787651"
+            assert hdul[1].header["CHECKSUM"] == "1HCH3G9F1GCF1G9F"
+
     def test_ascii_table_data(self):
         a1 = np.array(["abc", "def"])
         r1 = np.array([11.0, 12.0])
@@ -203,13 +357,10 @@ class TestChecksumFunctions(BaseChecksumTests):
             assert "DATASUM" in hdul[0].header
             assert hdul[0].header["DATASUM"] == "0"
 
-            if not sys.platform.startswith("win32"):
-                # The checksum ends up being different on Windows, possibly due
-                # to slight floating point differences
-                assert "CHECKSUM" in hdul[1].header
-                assert hdul[1].header["CHECKSUM"] == "3rKFAoI94oICAoI9"
-                assert "DATASUM" in hdul[1].header
-                assert hdul[1].header["DATASUM"] == "1914653725"
+            assert "CHECKSUM" in hdul[1].header
+            assert hdul[1].header["CHECKSUM"] == "3rKFAoI94oICAoI9"
+            assert "DATASUM" in hdul[1].header
+            assert hdul[1].header["DATASUM"] == "1914653725"
 
     def test_open_with_no_keywords(self):
         hdul = fits.open(self.data("arange.fits"), checksum=True)
@@ -268,10 +419,10 @@ class TestChecksumFunctions(BaseChecksumTests):
         hdu.writeto(self.temp("tmp.fits"), overwrite=True, checksum="datasum")
         with fits.open(self.temp("tmp.fits"), checksum=True) as hdul:
             if not (hasattr(hdul[0], "_datasum") and hdul[0]._datasum):
-                pytest.fail(msg="Missing DATASUM keyword")
+                pytest.fail("Missing DATASUM keyword")
 
             if not (hasattr(hdul[0], "_checksum") and not hdul[0]._checksum):
-                pytest.fail(msg="Non-empty CHECKSUM keyword")
+                pytest.fail("Non-empty CHECKSUM keyword")
 
     def test_open_update_mode_preserve_checksum(self):
         """
@@ -280,15 +431,15 @@ class TestChecksumFunctions(BaseChecksumTests):
         update mode, even though no changes were made to the file.
         """
 
-        self.copy_file("checksum.fits")
+        testfile = self.copy_file("checksum.fits")
 
-        with fits.open(self.temp("checksum.fits")) as hdul:
+        with fits.open(testfile) as hdul:
             data = hdul[1].data.copy()
 
-        hdul = fits.open(self.temp("checksum.fits"), mode="update")
+        hdul = fits.open(testfile, mode="update")
         hdul.close()
 
-        with fits.open(self.temp("checksum.fits")) as hdul:
+        with fits.open(testfile) as hdul:
             assert "CHECKSUM" in hdul[1].header
             assert "DATASUM" in hdul[1].header
             assert comparerecords(data, hdul[1].data)
@@ -304,16 +455,16 @@ class TestChecksumFunctions(BaseChecksumTests):
         opened with checksum='remove'.
         """
 
-        self.copy_file("checksum.fits")
-        with fits.open(self.temp("checksum.fits")) as hdul:
+        testfile = self.copy_file("checksum.fits")
+        with fits.open(testfile) as hdul:
             header = hdul[1].header.copy()
             data = hdul[1].data.copy()
 
-        with fits.open(self.temp("checksum.fits"), mode="update") as hdul:
+        with fits.open(testfile, mode="update") as hdul:
             hdul[1].header["FOO"] = "BAR"
             hdul[1].data[0]["TIME"] = 42
 
-        with fits.open(self.temp("checksum.fits")) as hdul:
+        with fits.open(testfile) as hdul:
             header2 = hdul[1].header
             data2 = hdul[1].data
             assert header2[:-3] == header[:-2]
@@ -323,12 +474,10 @@ class TestChecksumFunctions(BaseChecksumTests):
             assert (data2["TIME"][1:] == data["TIME"][1:]).all()
             assert data2["TIME"][0] == 42
 
-        with fits.open(
-            self.temp("checksum.fits"), mode="update", checksum="remove"
-        ) as hdul:
+        with fits.open(testfile, mode="update", checksum="remove") as hdul:
             pass
 
-        with fits.open(self.temp("checksum.fits")) as hdul:
+        with fits.open(testfile) as hdul:
             header2 = hdul[1].header
             data2 = hdul[1].data
             assert header2[:-1] == header[:-2]
@@ -373,7 +522,7 @@ class TestChecksumFunctions(BaseChecksumTests):
 
     def _check_checksums(self, hdu):
         if not (hasattr(hdu, "_datasum") and hdu._datasum):
-            pytest.fail(msg="Missing DATASUM keyword")
+            pytest.fail("Missing DATASUM keyword")
 
         if not (hasattr(hdu, "_checksum") and hdu._checksum):
-            pytest.fail(msg="Missing CHECKSUM keyword")
+            pytest.fail("Missing CHECKSUM keyword")

@@ -2,10 +2,16 @@
 # This file connects the readers/writers to the astropy.table.Table class
 
 import functools
-import os.path
+from pathlib import Path
 
 import astropy.io.registry as io_registry
 from astropy.table import Table
+from astropy.utils.compat.optional_deps import (
+    HAS_BS4,
+    HAS_HTML5LIB,
+    HAS_LXML,
+    HAS_PANDAS,
+)
 from astropy.utils.misc import NOT_OVERWRITING_MSG
 
 __all__ = ["PANDAS_FMTS"]
@@ -22,40 +28,12 @@ PANDAS_FMTS = {
 
 PANDAS_PREFIX = "pandas."
 
-# Imports for reading HTML
-_IMPORTS = False
-_HAS_BS4 = False
-_HAS_LXML = False
-_HAS_HTML5LIB = False
-
-
-def import_html_libs():
-    """Try importing dependencies for reading HTML.
-
-    This is copied from pandas.io.html
-    """
-    # import things we need
-    # but make this done on a first use basis
-
-    global _IMPORTS
-    if _IMPORTS:
-        return
-
-    global _HAS_BS4, _HAS_LXML, _HAS_HTML5LIB
-
-    from astropy.utils.compat.optional_deps import HAS_BS4 as _HAS_BS4
-    from astropy.utils.compat.optional_deps import HAS_HTML5LIB as _HAS_HTML5LIB
-    from astropy.utils.compat.optional_deps import HAS_LXML as _HAS_LXML
-
-    _IMPORTS = True
-
 
 def _pandas_read(fmt, filespec, **kwargs):
     """Provide io Table connector to read table using pandas."""
-    try:
-        import pandas as pd
-    except ImportError:
-        raise ImportError("pandas must be installed to use pandas table reader")
+    if not HAS_PANDAS:
+        raise ModuleNotFoundError("pandas must be installed to use pandas table reader")
+    import pandas as pd
 
     pandas_fmt = fmt[len(PANDAS_PREFIX) :]  # chop the 'pandas.' in front
     read_func = getattr(pd, "read_" + pandas_fmt)
@@ -69,8 +47,7 @@ def _pandas_read(fmt, filespec, **kwargs):
     # not specifically selected a flavor.  If things go wrong the pandas exception
     # with instruction to install a library will come up.
     if pandas_fmt == "html" and "flavor" not in kwargs:
-        import_html_libs()
-        if not _HAS_LXML and _HAS_HTML5LIB and _HAS_BS4:
+        if not HAS_LXML and HAS_HTML5LIB and HAS_BS4:
             read_kwargs["flavor"] = "bs4"
 
     df = read_func(filespec, **read_kwargs)
@@ -95,7 +72,7 @@ def _pandas_write(fmt, tbl, filespec, overwrite=False, **kwargs):
 
     if not overwrite:
         try:  # filespec is not always a path-like
-            exists = os.path.exists(filespec)
+            exists = Path(filespec).exists()
         except TypeError:  # skip invalid arguments
             pass
         else:

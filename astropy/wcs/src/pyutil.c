@@ -7,8 +7,10 @@
 
 /* util.h must be imported first */
 #include "astropy_wcs/pyutil.h"
-
 #include "astropy_wcs/docstrings.h"
+
+#include <stdlib.h> // malloc, free
+#include <string.h> // memcpy
 
 #include "wcsfix.h"
 #include "wcshdr.h"
@@ -16,7 +18,7 @@
 #include "wcsunits.h"
 
 /*@null@*/ static INLINE PyObject*
-_PyArrayProxy_New(
+_ArrayProxy_New(
     /*@shared@*/ PyObject* self,
     int nd,
     const npy_intp* dims,
@@ -50,25 +52,25 @@ _PyArrayProxy_New(
 }
 
 /*@null@*/ PyObject*
-PyArrayProxy_New(
+ArrayProxy_New(
     /*@shared@*/ PyObject* self,
     int nd,
     const npy_intp* dims,
     int typenum,
     const void* data) {
 
-  return _PyArrayProxy_New(self, nd, dims, typenum, data, NPY_ARRAY_WRITEABLE);
+  return _ArrayProxy_New(self, nd, dims, typenum, data, NPY_ARRAY_WRITEABLE);
 }
 
 /*@null@*/ PyObject*
-PyArrayReadOnlyProxy_New(
+ArrayReadOnlyProxy_New(
     /*@shared@*/ PyObject* self,
     int nd,
     const npy_intp* dims,
     int typenum,
     const void* data) {
 
-  return _PyArrayProxy_New(self, nd, dims, typenum, data, 0);
+  return _ArrayProxy_New(self, nd, dims, typenum, data, 0);
 }
 
 void
@@ -733,7 +735,6 @@ get_pscards(
     }
 
     if (PyList_SetItem(result, i, subresult)) {
-      Py_DECREF(subresult);
       Py_DECREF(result);
       return NULL;
     }
@@ -844,7 +845,6 @@ get_pvcards(
     }
 
     if (PyList_SetItem(result, i, subresult)) {
-      Py_DECREF(subresult);
       Py_DECREF(result);
       return NULL;
     }
@@ -871,7 +871,7 @@ set_pvcards(
   if (!fastseq)
     goto done;
 
-  size = PySequence_Fast_GET_SIZE(value);
+  size = PySequence_Size(value);
   newmem = malloc(sizeof(struct pvcard) * size);
 
   /* Raise exception if size is nonzero but newmem
@@ -881,11 +881,13 @@ set_pvcards(
     return -1;
   }
 
+  PyObject* item = NULL;
   for (i = 0; i < size; ++i)
   {
-    if (!PyArg_ParseTuple(PySequence_Fast_GET_ITEM(value, i), "iid",
+    if (!PyArg_ParseTuple((item = PySequence_GetItem(value, i)), "iid",
         &newmem[i].i, &newmem[i].m, &newmem[i].value))
     {
+      Py_DECREF(item);
       goto done;
     }
   }

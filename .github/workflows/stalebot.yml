@@ -7,12 +7,15 @@ on:
     - cron: '30 5 * * *'
   workflow_dispatch:
 
+permissions:
+  pull-requests: write
+
 jobs:
   stalebot:
     runs-on: ubuntu-latest
     if: github.repository == 'astropy/astropy'
     steps:
-      - uses: pllim/action-astropy-stalebot@main
+      - uses: pllim/action-astropy-stalebot@8a20289632f0d5068e9c129360b27b0a35e4d256  # main
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           STALEBOT_MAX_ISSUES: -1

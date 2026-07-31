@@ -8,6 +8,7 @@ to/from TABLEDATA_ and BINARY_ formats.
 import re
 import struct
 import sys
+from math import prod
 
 # THIRD-PARTY
 import numpy as np
@@ -38,8 +39,18 @@ from .exceptions import (
     vo_warn,
     warn_or_raise,
 )
+from .fast_converters import (
+    fast_binparse_bit,
+    fast_binparse_bool,
+    fast_binparse_double,
+    fast_binparse_float,
+    fast_binparse_int,
+    fast_binparse_long,
+    fast_binparse_short,
+    fast_binparse_ubyte,
+)
 
-__all__ = ["get_converter", "Converter", "table_column_to_votable_datatype"]
+__all__ = ["Converter", "get_converter", "table_column_to_votable_datatype"]
 
 
 pedantic_array_splitter = re.compile(r" +")
@@ -103,18 +114,9 @@ def bitarray_to_bool(data, length):
     -------
     array : numpy bool array
     """
-    results = []
-    for byte in data:
-        for bit_no in range(7, -1, -1):
-            bit = byte & (1 << bit_no)
-            bit = bit != 0
-            results.append(bit)
-            if len(results) == length:
-                break
-        if len(results) == length:
-            break
-
-    return np.array(results, dtype="b1")
+    return np.unpackbits(
+        np.frombuffer(data, dtype=np.uint8), count=length if length >= 0 else None
+    ).astype(bool, copy=False)
 
 
 def bool_to_bitarray(value):
@@ -133,22 +135,7 @@ def bool_to_bitarray(value):
         significant bit in the result.  The length will be `floor((N +
         7) / 8)` where `N` is the length of `value`.
     """
-    value = value.flat
-    bit_no = 7
-    byte = 0
-    bytes = []
-    for v in value:
-        if v:
-            byte |= 1 << bit_no
-        if bit_no == 0:
-            bytes.append(byte)
-            bit_no = 7
-            byte = 0
-        else:
-            bit_no -= 1
-    if bit_no != 7:
-        bytes.append(byte)
-
+    bytes = np.packbits(np.ma.filled(value, fill_value=False).flat).tobytes()
     return struct.pack(f"{len(bytes)}B", *bytes)
 
 
@@ -322,15 +309,24 @@ class Char(Converter):
             self.binoutput = self._binoutput_var
             self.arraysize = "*"
         else:
-            if field.arraysize.endswith("*"):
-                field.arraysize = field.arraysize[:-1]
+            # Check if this is a bounded variable-length field
+            is_variable = field.arraysize.endswith("*")
+            numeric_part = field.arraysize.removesuffix("*")
             try:
-                self.arraysize = int(field.arraysize)
+                self.arraysize = int(numeric_part)
             except ValueError:
-                vo_raise(E01, (field.arraysize, "char", field.ID), config)
+                vo_raise(E01, (numeric_part, "char", field.ID), config)
+
             self.format = f"U{self.arraysize:d}"
-            self.binparse = self._binparse_fixed
-            self.binoutput = self._binoutput_fixed
+
+            # For bounded variable-length fields use the variable methods
+            if is_variable:
+                self.binparse = self._binparse_var
+                self.binoutput = self._binoutput_var
+            else:
+                self.binparse = self._binparse_fixed
+                self.binoutput = self._binoutput_fixed
+
             self._struct_format = f">{self.arraysize:d}s"
 
     def supports_empty_values(self, config):
@@ -371,6 +367,10 @@ class Char(Converter):
 
     def _binparse_var(self, read):
         length = self._parse_length(read)
+
+        if self.arraysize != "*" and length > self.arraysize:
+            vo_warn(W46, ("char", self.arraysize), None, None)
+
         return read(length).decode("ascii"), False
 
     def _binparse_fixed(self, read):
@@ -389,6 +389,10 @@ class Char(Converter):
                 value = value.encode("ascii")
             except ValueError:
                 vo_raise(E24, (value, self.field_name))
+
+        if self.arraysize != "*" and len(value) > self.arraysize:
+            vo_warn(W46, ("char", self.arraysize), None, None)
+
         return self._write_length(len(value)) + value
 
     def _binoutput_fixed(self, value, mask):
@@ -424,14 +428,24 @@ class UnicodeChar(Converter):
             self.binoutput = self._binoutput_var
             self.arraysize = "*"
         else:
+            # Check if this is a bounded variable-length field
+            is_variable = field.arraysize.endswith("*")
+            numeric_part = field.arraysize.removesuffix("*")
             try:
-                self.arraysize = int(field.arraysize)
+                self.arraysize = int(numeric_part)
             except ValueError:
-                vo_raise(E01, (field.arraysize, "unicode", field.ID), config)
+                vo_raise(E01, (numeric_part, "unicode", field.ID), config)
+
             self.format = f"U{self.arraysize:d}"
-            self.binparse = self._binparse_fixed
-            self.binoutput = self._binoutput_fixed
-            self._struct_format = f">{self.arraysize*2:d}s"
+
+            if is_variable:
+                self.binparse = self._binparse_var
+                self.binoutput = self._binoutput_var
+            else:
+                self.binparse = self._binparse_fixed
+                self.binoutput = self._binoutput_fixed
+
+            self._struct_format = f">{self.arraysize * 2:d}s"
 
     def parse(self, value, config=None, pos=None):
         if self.arraysize != "*" and len(value) > self.arraysize:
@@ -445,6 +459,10 @@ class UnicodeChar(Converter):
 
     def _binparse_var(self, read):
         length = self._parse_length(read)
+
+        if self.arraysize != "*" and length > self.arraysize:
+            vo_warn(W46, ("unicodeChar", self.arraysize), None, None)
+
         return read(length * 2).decode("utf_16_be"), False
 
     def _binparse_fixed(self, read):
@@ -458,8 +476,14 @@ class UnicodeChar(Converter):
     def _binoutput_var(self, value, mask):
         if mask or value is None or value == "":
             return _zero_int
+
+        if self.arraysize != "*" and len(value) > self.arraysize:
+            vo_warn(W46, ("unicodeChar", self.arraysize), None, None)
+            value = value[: self.arraysize]
+
         encoded = value.encode("utf_16_be")
-        return self._write_length(len(encoded) / 2) + encoded
+
+        return self._write_length(len(encoded) // 2) + encoded
 
     def _binoutput_fixed(self, value, mask):
         if mask:
@@ -598,11 +622,7 @@ class NumericArray(Array):
         self._base = base
         self._arraysize = arraysize
         self.format = f"{tuple(arraysize)}{base.format}"
-
-        self._items = 1
-        for dim in arraysize:
-            self._items *= dim
-
+        self._items = prod(arraysize)
         self._memsize = np.dtype(self.format).itemsize
         self._bigendian_format = ">" + self.format
 
@@ -703,11 +723,18 @@ class FloatingPoint(Numeric):
 
         Numeric.__init__(self, field, config, pos)
 
+        if self.null is not None:
+            self._fast_null_param = float(self.null)
+            self._fast_has_null = True
+        else:
+            self._fast_null_param = 0.0
+            self._fast_has_null = False
+
         precision = field.precision
         width = field.width
 
         if precision is None:
-            format_parts = ["{!r:>"]
+            format_parts = ["{!s:>"]
         else:
             format_parts = ["{:"]
 
@@ -775,7 +802,7 @@ class FloatingPoint(Numeric):
             result = self._output_format.format(value)
             if result.startswith("array"):
                 raise RuntimeError()
-            if self._output_format[2] == "r" and result.endswith(".0"):
+            if self._output_format[2] == "s" and result.endswith(".0"):
                 result = result[:-2]
             return result
         elif np.isnan(value):
@@ -803,11 +830,14 @@ class FloatingPoint(Numeric):
 
 class Double(FloatingPoint):
     """
-    Handles the double datatype.  Double-precision IEEE
-    floating-point.
+    Handles the double datatype.  Double-precision IEEE floating-point.
     """
 
     format = "f8"
+
+    def binparse(self, read):
+        data = read(8)
+        return fast_binparse_double(data, 0, self._fast_null_param, self._fast_has_null)
 
 
 class Float(FloatingPoint):
@@ -816,6 +846,10 @@ class Float(FloatingPoint):
     """
 
     format = "f4"
+
+    def binparse(self, read):
+        data = read(4)
+        return fast_binparse_float(data, 0, self._fast_null_param, self._fast_has_null)
 
 
 class Integer(Numeric):
@@ -827,6 +861,13 @@ class Integer(Numeric):
 
     def __init__(self, field, config=None, pos=None):
         Numeric.__init__(self, field, config, pos)
+
+        if self.null is not None:
+            self._fast_null_param = int(self.null)
+            self._fast_has_null = True
+        else:
+            self._fast_null_param = 0
+            self._fast_has_null = False
 
     def parse(self, value, config=None, pos=None):
         if config is None:
@@ -904,6 +945,10 @@ class UnsignedByte(Integer):
     val_range = (0, 255)
     bit_size = "8-bit unsigned"
 
+    def binparse(self, read):
+        data = read(1)
+        return fast_binparse_ubyte(data, 0, self._fast_null_param, self._fast_has_null)
+
 
 class Short(Integer):
     """
@@ -913,6 +958,10 @@ class Short(Integer):
     format = "i2"
     val_range = (-32768, 32767)
     bit_size = "16-bit"
+
+    def binparse(self, read):
+        data = read(2)
+        return fast_binparse_short(data, 0, self._fast_null_param, self._fast_has_null)
 
 
 class Int(Integer):
@@ -924,6 +973,10 @@ class Int(Integer):
     val_range = (-2147483648, 2147483647)
     bit_size = "32-bit"
 
+    def binparse(self, read):
+        data = read(4)
+        return fast_binparse_int(data, 0, self._fast_null_param, self._fast_has_null)
+
 
 class Long(Integer):
     """
@@ -933,6 +986,10 @@ class Long(Integer):
     format = "i8"
     val_range = (-9223372036854775808, 9223372036854775807)
     bit_size = "64-bit"
+
+    def binparse(self, read):
+        data = read(8)
+        return fast_binparse_long(data, 0, self._fast_null_param, self._fast_has_null)
 
 
 class ComplexArrayVarArray(VarArray):
@@ -1055,11 +1112,9 @@ class Complex(FloatingPoint, Array):
                 value = self.null
         real = self._output_format.format(float(value.real))
         imag = self._output_format.format(float(value.imag))
-        if self._output_format[2] == "r":
-            if real.endswith(".0"):
-                real = real[:-2]
-            if imag.endswith(".0"):
-                imag = imag[:-2]
+        if self._output_format[2] == "s":
+            real = real.removesuffix(".0")
+            imag = imag.removesuffix(".0")
         return real + " " + imag
 
 
@@ -1120,7 +1175,6 @@ class BitArray(NumericArray):
     def binoutput(self, value, mask):
         if np.any(mask):
             vo_warn(W39)
-
         return bool_to_bitarray(value)
 
 
@@ -1161,7 +1215,7 @@ class Bit(Converter):
 
     def binparse(self, read):
         data = read(1)
-        return (ord(data) & 0x8) != 0, False
+        return fast_binparse_bit(data)
 
     def binoutput(self, value, mask):
         if mask:
@@ -1243,8 +1297,8 @@ class Boolean(Converter):
         return "F"
 
     def binparse(self, read):
-        value = ord(read(1))
-        return self.binparse_value(value)
+        data = read(1)
+        return fast_binparse_bool(data)
 
     _binparse_mapping = {
         ord("T"): (True, False),
@@ -1446,28 +1500,52 @@ def table_column_to_votable_datatype(column):
         set on a VOTable FIELD element.
     """
     votable_string_dtype = None
+    max_length = None
+    original_arraysize = None
+
     if column.info.meta is not None:
         votable_string_dtype = column.info.meta.get("_votable_string_dtype")
+        # Check if we have stored the original arraysize with bounds
+        # If so, extract the max length
+        original_arraysize = column.info.meta.get("_votable_arraysize")
+        if (
+            original_arraysize is not None
+            and original_arraysize.endswith("*")
+            and not original_arraysize == "*"
+        ):
+            max_length = original_arraysize[:-1]
+
     if column.dtype.char == "O":
+        arraysize = "*"
+
+        # If max length is stored use it to create a bounded var-length array
+        if max_length is not None:
+            arraysize = f"{max_length}*"
+
         if votable_string_dtype is not None:
-            return {"datatype": votable_string_dtype, "arraysize": "*"}
+            return {"datatype": votable_string_dtype, "arraysize": arraysize}
         elif isinstance(column[0], np.ndarray):
             dtype, shape = _all_matching_dtype(column)
             if dtype is not False:
                 result = numpy_to_votable_dtype(dtype, shape)
                 if "arraysize" not in result:
-                    result["arraysize"] = "*"
+                    result["arraysize"] = arraysize
                 else:
                     result["arraysize"] += "*"
                 return result
 
         # All bets are off, do the most generic thing
-        return {"datatype": "unicodeChar", "arraysize": "*"}
+        return {"datatype": "unicodeChar", "arraysize": arraysize}
 
     # For fixed size string columns, datatype here will be unicodeChar,
     # but honor the original FIELD datatype if present.
     result = numpy_to_votable_dtype(column.dtype, column.shape[1:])
     if result["datatype"] == "unicodeChar" and votable_string_dtype == "char":
         result["datatype"] = "char"
+
+    # If we stored the original arraysize, use it instead of what
+    # numpy_to_votable_dtype derives
+    if original_arraysize is not None:
+        result["arraysize"] = original_arraysize
 
     return result

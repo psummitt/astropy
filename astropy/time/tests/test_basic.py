@@ -5,6 +5,7 @@ import datetime
 import functools
 import gc
 import os
+import warnings
 from copy import deepcopy
 from decimal import Decimal, localcontext
 from io import StringIO
@@ -29,7 +30,8 @@ from astropy.time import (
     TimezoneInfo,
     conf,
 )
-from astropy.utils import iers, isiterable
+from astropy.utils import iers
+from astropy.utils.compat import NUMPY_LT_2_5
 from astropy.utils.compat.optional_deps import HAS_H5PY, HAS_PYTZ
 from astropy.utils.exceptions import AstropyDeprecationWarning
 
@@ -484,6 +486,7 @@ class TestBasic:
         """Create a time object using each defined format"""
         Time(2000.5, format="decimalyear")
         Time(100.0, format="cxcsec")
+        Time(100.0, format="galexsec")
         Time(100.0, format="unix")
         Time(100.0, format="gps")
         Time(1950.0, format="byear", scale="tai")
@@ -542,6 +545,8 @@ class TestBasic:
             t.unix
         with pytest.raises(ScaleValueError):
             t.cxcsec
+        with pytest.raises(ScaleValueError):
+            t.galexsec
         with pytest.raises(ScaleValueError):
             t.plot_date
 
@@ -852,7 +857,7 @@ class TestSubFormat:
         """Non-existent input subformat"""
         with pytest.raises(ValueError):
             Time(
-                "2000-01-01 01:01", format="iso", scale="tai", in_subfmt="doesnt exist"
+                "2000-01-01 01:01", format="iso", scale="tai", in_subfmt="doesn't exist"
             )
 
     def test_output_subformat(self):
@@ -942,6 +947,137 @@ class TestSubFormat:
         assert np.all(
             t.yday == np.array(["2000:336:00:00:00.000", "2001:335:01:01:01.123"])
         )
+
+    @pytest.mark.parametrize("fmt", ["iso", "isot", "yday", "fits"])
+    @pytest.mark.parametrize("precision", [0, 3, 9])
+    def test_string_value_matches_per_element(self, monkeypatch, fmt, precision):
+        """The vectorized string output matches the per-element formatting.
+
+        Includes a masked value and a couple of leap-day boundaries, and runs
+        each format at a few precisions.
+        """
+        times = [
+            "2001-01-01T00:00:00.000000001",
+            "2002-06-15T12:30:45.500000000",
+            "2004-02-29T23:59:59.999999999",
+            "2004-03-01T00:00:00.000001",
+            "2000-02-29T06:00:00.000000000",
+            "2000-03-01T00:00:00.000000000",
+            "2003-12-31T18:18:18.181818181",
+            "2001-07-04T01:02:03.040506070",
+        ]
+
+        def make():
+            t = Time(times, format="isot", scale="utc").reshape(2, 4)
+            t[0, 1] = np.ma.masked
+            t.precision = precision
+            return t
+
+        got = getattr(make(), fmt)
+        # Disable the vectorized path and compare against the original loop.
+        monkeypatch.setattr(TimeString, "_value_fast", lambda self, str_fmt: None)
+        ref = getattr(make(), fmt)
+        assert_array_equal(got.unmasked, ref.unmasked)
+        assert_array_equal(got.mask, ref.mask)
+
+    @pytest.mark.parametrize(
+        "fmt, out_subfmt",
+        [
+            ("iso", "date_hm"),
+            ("iso", "date"),
+            ("isot", "date_hm"),
+            ("yday", "date"),
+            ("fits", "date"),
+        ],
+    )
+    def test_string_value_non_default_out_subfmt(self, monkeypatch, fmt, out_subfmt):
+        """The vectorized output matches the per-element path for sub-formats
+        other than the default, including ones that drop the seconds field."""
+        times = [
+            "2001-01-01T01:02:03.400000000",
+            "2004-02-29T23:59:59.900000000",
+            "2003-12-31T18:18:18.100000000",
+            "2002-06-15T00:00:00.000000000",
+        ]
+
+        def make():
+            t = Time(times, format="isot", scale="utc").reshape(2, 2)
+            t[0, 1] = np.ma.masked
+            t.out_subfmt = out_subfmt
+            return t
+
+        got = getattr(make(), fmt)
+        monkeypatch.setattr(TimeString, "_value_fast", lambda self, str_fmt: None)
+        ref = getattr(make(), fmt)
+        assert_array_equal(got.unmasked, ref.unmasked)
+        assert_array_equal(got.mask, ref.mask)
+
+    def test_string_value_fallback_on_mixed_year_width(self):
+        """Years of differing width fall back and still format correctly."""
+        t = Time(
+            ["0500-03-01T00:00:00", "2003-01-01T00:00:00"], format="isot", scale="tt"
+        )
+        assert t._time._value_fast("{year:d}-{mon:02d}") is None
+        assert np.all(t.isot == ["500-03-01T00:00:00.000", "2003-01-01T00:00:00.000"])
+
+    def test_string_value_trailing_literal(self):
+        """A template ending in literal text after the last field exercises the
+        trailing-literal branch of the vectorized builder."""
+        t = Time(
+            ["2001-01-02T00:00:00", "2004-02-29T00:00:00"], format="isot", scale="tt"
+        )
+        out = t._time._value_fast("{year:d}-{mon:02d}-{day:02d}Z")
+        assert_array_equal(out, ["2001-01-02Z", "2004-02-29Z"])
+
+    def test_string_value_unknown_field_falls_back(self):
+        """An unrecognized field name makes the fast path bail out."""
+        t = Time(["2001-01-01T00:00:00"], format="isot", scale="tt")
+        assert t._time._value_fast("{bogus:02d}") is None
+
+    def test_string_write_decimal_signed(self):
+        """The signed branch writes an explicit ``+``/``-`` in the first column."""
+        from astropy.time.formats import _write_decimal
+
+        buf = np.zeros((2, 6), dtype=np.uint32)
+        _write_decimal(buf, np.array([2003, -42]), 6, signed=True)
+        assert_array_equal(buf.view("U6").reshape(2), ["+02003", "-00042"])
+
+    def test_string_field_width(self):
+        """Integer specs that can/can't be built as a fixed-width column."""
+        vals = np.array([2003, 2004])
+        # Specs used by the built-in templates take the fast path when the
+        # values fit in the field.
+        assert TimeString._field_width("d", vals) == (4, False)
+        assert TimeString._field_width("02d", np.array([1, 12])) == (2, False)
+        assert TimeString._field_width("+06d", vals) == (6, True)
+        assert TimeString._field_width("d", np.array([], dtype=int)) == (1, False)
+        # Anything we would format wrongly by zero-padding is left to the loop:
+        # space padding, a bare width that varies, negatives, or a sign with no
+        # width, as well as non-integer specs.
+        assert TimeString._field_width("6d", vals) == (None, None)
+        assert TimeString._field_width("d", np.array([99, 2003])) == (None, None)
+        assert TimeString._field_width("d", np.array([-5, 5])) == (None, None)
+        assert TimeString._field_width("+d", vals) == (None, None)
+        assert TimeString._field_width(".3f", vals) == (None, None)
+        # A value too wide for its zero-padded field would be truncated, so it
+        # falls back too rather than silently dropping digits.
+        assert TimeString._field_width("02d", np.array([1, 100])) == (None, None)
+        assert TimeString._field_width("04d", np.array([12345])) == (None, None)
+        assert TimeString._field_width("+06d", np.array([100002])) == (None, None)
+
+    def test_string_fits_very_large_years(self, monkeypatch):
+        """A year too wide for the FITS ``+06d`` field falls back and stays correct."""
+        times = ["J500", "J100000"]
+        t = Time(times)
+        t.format = "fits"
+        fmt = t._time.subfmts[2][2] + ".{fracsec:0" + str(t.precision) + "d}"
+        # The six-digit year overflows the signed ``+06d`` field, so the fast
+        # path bails out and we format these element by element.
+        assert t._time._value_fast(fmt) is None
+        got = t.fits
+        monkeypatch.setattr(TimeString, "_value_fast", lambda self, str_fmt: None)
+        ref = Time(times).fits
+        assert_array_equal(got, ref)
 
     def test_scale_input(self):
         """Test for issues related to scale input"""
@@ -1039,6 +1175,14 @@ class TestSubFormat:
         assert allclose_sec(t.cxcsec, t_cxcsec)
         assert allclose_sec(t.tt.cxcsec, t_cxcsec)
 
+        # This is the beginning of ObsID 6375102748379054080
+        # which is listed in MAST as starting at 2004-01-21 16:34:08
+        # which differs about 10 s from the value below, which is taken from
+        # the header of the observations and gPhoton processing.
+        t3 = Time("2004-01-21 16:33:57")
+        assert allclose_sec(t3.galexsec, 758738037.0)
+        assert allclose_sec(t3.galexsec, t3.unix - 315964800)
+
         # Round trip through epoch time
         for scale in ("utc", "tt"):
             t = Time("2000:001", scale=scale)
@@ -1071,7 +1215,16 @@ class TestSubFormat:
             #   val = matplotlib.dates.date2num('2000-01-01')
             val = 730120.0
         else:
-            val = date2num(datetime.datetime(2000, 1, 1))
+            # Ignore warnings from numpy for older matplotlib
+            # https://github.com/astropy/astropy/issues/19586
+            if NUMPY_LT_2_5:
+                val = date2num(datetime.datetime(2000, 1, 1))
+            else:
+                with warnings.catch_warnings(
+                    action="ignore", category=DeprecationWarning
+                ):
+                    val = date2num(datetime.datetime(2000, 1, 1))
+
         t = Time("2000-01-01 00:00:00", scale="utc")
         assert np.allclose(t.plot_date, val, atol=1e-5, rtol=0)
 
@@ -1256,9 +1409,9 @@ class TestNumericalSubFormat:
         with localcontext() as ctx:
             ctx.prec = 40
             t2_s_40 = t.to_value(fmt, "str")
-        assert (
-            t_s_2 == t2_s_40
-        ), "String representation should not depend on Decimal context"
+        assert t_s_2 == t2_s_40, (
+            "String representation should not depend on Decimal context"
+        )
 
     def test_decimal_context_caching(self):
         t = Time(val=58000, val2=1e-14, format="mjd", scale="tai")
@@ -1486,7 +1639,7 @@ def test_now():
 
     # `Time.datetime` is not timezone aware, meaning `.replace` is necessary for
     # `now` also not be timezone aware.
-    now = datetime.datetime.now(tz=datetime.timezone.utc).replace(tzinfo=None)
+    now = datetime.datetime.now(tz=datetime.UTC).replace(tzinfo=None)
 
     t = Time.now()
 
@@ -1740,20 +1893,20 @@ def test_remove_astropy_time():
 def test_isiterable():
     """
     Ensure that scalar `Time` instances are not reported as iterable by the
-    `isiterable` utility.
+    `np.iterable()` utility.
 
     Regression test for https://github.com/astropy/astropy/issues/4048
     """
 
     t1 = Time.now()
-    assert not isiterable(t1)
+    assert not np.iterable(t1)
 
     t2 = Time(
         ["1999-01-01 00:00:00.123456789", "2010-01-01 00:00:00"],
         format="iso",
         scale="utc",
     )
-    assert isiterable(t2)
+    assert np.iterable(t2)
 
 
 def test_to_datetime():
@@ -2523,12 +2676,12 @@ def test_ymdhms_init_from_dict_scalar(kwargs):
     tm = Time(time_dict, **kwargs)
 
     assert tm == Time("2016-12-31T23:59:60.123456789")
-    for attr in time_dict:
+    for attr, expected in time_dict.items():
         for value in (tm.value[attr], getattr(tm.value, attr)):
             if attr == "second":
-                assert allclose_sec(time_dict[attr], value)
+                assert allclose_sec(value, expected)
             else:
-                assert time_dict[attr] == value
+                assert value == expected
 
     # Now test initializing from a YMDHMS format time using the object
     tm_rt = Time(tm)

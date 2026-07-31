@@ -5,9 +5,11 @@ The ``lombscargle`` function here is essentially a sophisticated switch
 statement for the various implementations available in this submodule
 """
 
-__all__ = ["lombscargle", "available_methods"]
+__all__ = ["available_methods", "lombscargle"]
 
 import numpy as np
+
+from astropy.utils.compat.optional_deps import HAS_SCIPY
 
 from .chi2_impl import lombscargle_chi2
 from .cython_impl import lombscargle_cython
@@ -30,11 +32,7 @@ def available_methods():
     methods = ["auto", "slow", "chi2", "cython", "fast", "fastchi2"]
 
     # Scipy required for scipy algorithm (obviously)
-    try:
-        import scipy  # noqa: F401
-    except ImportError:
-        pass
-    else:
+    if HAS_SCIPY:
         methods.append("scipy")
     return methods
 
@@ -145,6 +143,10 @@ def lombscargle(
         - 'fast': use the O[N log N] fast method. Note that this requires
           evenly-spaced frequencies: by default this will be checked unless
           ``assume_regular_frequency`` is set to True.
+        - 'cython': use the O[N^2] method written in cython. Note that this
+          method conditionally enables a recursive update of the trigonometric
+          terms across the frequency grid, typically leading to a significant
+          performance boost if ``assume_regular_frequency`` is set to True.
         - `slow`: use the O[N^2] pure-python implementation
         - `chi2`: use the O[N^2] chi2/linear-fitting implementation
         - `fastchi2`: use the O[N log N] chi2 implementation. Note that this
@@ -156,8 +158,8 @@ def lombscargle(
 
     assume_regular_frequency : bool, optional
         if True, assume that the input frequency is of the form
-        freq = f0 + df * np.arange(N). Only referenced if method is 'auto'
-        or 'fast'.
+        freq = f0 + df * np.arange(N). Only referenced if method is 'auto',
+        'fast' or 'cython'.
     normalization : str, optional
         Normalization to use for the periodogram.
         Options are 'standard' or 'psd'.
@@ -219,6 +221,13 @@ def lombscargle(
             kwds.pop("frequency"), assume_regular_frequency
         )
         kwds.update(f0=f0, df=df, Nf=Nf)
+
+    # if the grid is regular enable additional optimizations for the cython method
+    if method == "cython":
+        if assume_regular_frequency or _is_regular(frequency):
+            kwds.update(assume_regular_frequency=True)
+        else:
+            kwds.update(assume_regular_frequency=False)
 
     # only chi2 methods support nterms
     if not method.endswith("chi2"):

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from astropy import units as u
-from astropy.coordinates import Angle, EarthLocation, SkyCoord
+from astropy.coordinates import HCRS, Angle, EarthLocation, SkyCoord
 from astropy.coordinates.builtin_frames import (
     FK5,
     ICRS,
@@ -225,13 +225,15 @@ def test_skycoord_skyoffset_frame():
 
 @pytest.mark.parametrize(
     "from_origin,to_origin",
-    combinations(
-        (
-            ICRS(10.6847929 * u.deg, 41.2690650 * u.deg, M31_DISTANCE),
-            FK5(10.6847929 * u.deg, 41.2690650 * u.deg, M31_DISTANCE),
-            Galactic(121.1744050 * u.deg, -21.5729360 * u.deg, M31_DISTANCE),
-        ),
-        r=2,
+    list(
+        combinations(
+            (
+                ICRS(10.6847929 * u.deg, 41.2690650 * u.deg, M31_DISTANCE),
+                FK5(10.6847929 * u.deg, 41.2690650 * u.deg, M31_DISTANCE),
+                Galactic(121.1744050 * u.deg, -21.5729360 * u.deg, M31_DISTANCE),
+            ),
+            r=2,
+        )
     ),
 )
 def test_m31_coord_transforms(from_origin, to_origin):
@@ -366,3 +368,11 @@ def test_skyoffset_two_frames_interfering():
     target_icrs = target.transform_to(ICRS())
     # The line below was almost guaranteed to fail.
     dirs_icrs.transform_to(target_icrs.skyoffset_frame())
+
+
+def test_skyoffset_wrapping_vs_broadcasting():
+    # regression test for https://github.com/astropy/astropy/issues/16548
+    time = Time(["2021-01-01", "2021-01-01"])
+    origin = HCRS(0 * u.deg, 0 * u.deg, obstime=time)
+    frame = SkyOffsetFrame(origin=origin)
+    SkyCoord(240 * u.deg, 0 * u.deg, frame=frame)

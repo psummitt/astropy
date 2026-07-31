@@ -1,6 +1,10 @@
+import re
+
 import numpy as np
+import pytest
 from numpy.testing import assert_allclose
 
+from astropy import units as u
 from astropy.coordinates import SkyCoord
 from astropy.units import Quantity
 from astropy.wcs import WCS
@@ -205,6 +209,104 @@ def test_values_to_objects():
     assert c2.b == c2_out.b
 
 
+def test_low_level_wcs_duck_typed():
+    # Anything exposing world_axis_object_classes and world_axis_object_components
+    # should be accepted as low_level_wcs; serialized_classes is optional.
+    from types import SimpleNamespace
+    from typing import NamedTuple
+
+    wcs = SkyCoordDuplicateWCS()
+    c1, c2 = wcs.pixel_to_world(1, 2, 3, 4)
+
+    ns = SimpleNamespace(
+        world_axis_object_classes=wcs.world_axis_object_classes,
+        world_axis_object_components=wcs.world_axis_object_components,
+    )
+    assert np.allclose(
+        high_level_objects_to_values(c1, c2, low_level_wcs=ns), [2, 4, 6, 8]
+    )
+    c1_out, c2_out = values_to_high_level_objects(*[2, 4, 6, 8], low_level_wcs=ns)
+    assert c1.ra == c1_out.ra and c1.dec == c1_out.dec
+    assert c2.l == c2_out.l and c2.b == c2_out.b
+
+    class Frame(NamedTuple):
+        world_axis_object_classes: dict
+        world_axis_object_components: list
+
+    nt = Frame(wcs.world_axis_object_classes, wcs.world_axis_object_components)
+    assert np.allclose(
+        high_level_objects_to_values(c1, c2, low_level_wcs=nt), [2, 4, 6, 8]
+    )
+
+
+def test_low_level_wcs_duck_typed_serialized():
+    # serialized_classes=True on a duck-typed object still triggers deserialization.
+    from types import SimpleNamespace
+
+    wcs = SerializedWCS()
+    q = wcs.pixel_to_world(1)
+
+    ns = SimpleNamespace(
+        world_axis_object_classes=wcs.world_axis_object_classes,
+        world_axis_object_components=wcs.world_axis_object_components,
+        serialized_classes=True,
+    )
+    (value,) = high_level_objects_to_values(q, low_level_wcs=ns)
+    assert_allclose(value, 2)
+    (q_out,) = values_to_high_level_objects(2.0, low_level_wcs=ns)
+    assert isinstance(q_out, Quantity)
+    assert_allclose(q_out.to_value(u.deg), 2.0)
+
+
+class InvalidWCSQuantity(SkyCoordDuplicateWCS):
+    """
+    WCS which defines ``world_axis_object_components`` which returns Quantity
+    instead of bare Numpy arrays, which can cause issues. This is for a
+    regression test to make sure that we don't return Quantities from
+    ``world_axis_object_components``.
+    """
+
+    @property
+    def world_axis_object_components(self):
+        return [
+            ("test1", "ra", "spherical.lon"),
+            ("test1", "dec", "spherical.lat"),
+            ("test2", 0, "spherical.lon"),
+            ("test2", 1, "spherical.lat"),
+        ]
+
+
+def test_objects_to_values_invalid_type():
+    wcs = InvalidWCSQuantity()
+    c1, c2 = wcs.pixel_to_world(1, 2, 3, 4)
+    with pytest.raises(
+        TypeError,
+        match=(
+            re.escape(
+                "WCS world_axis_object_components results in values which are not "
+                "scalars or plain Numpy arrays (got <class "
+                "'astropy.coordinates.angles.core.Longitude'>)"
+            )
+        ),
+    ):
+        high_level_objects_to_values(c1, c2, low_level_wcs=wcs)
+
+
+def test_values_to_objects_invalid_type():
+    wcs = SkyCoordDuplicateWCS()
+    c1, c2 = wcs.pixel_to_world(1, 2, 3, 4)
+    with pytest.raises(
+        TypeError,
+        match=(
+            re.escape(
+                "Expected world coordinates as scalars or plain Numpy arrays (got "
+                "<class 'astropy.units.quantity.Quantity'>)"
+            )
+        ),
+    ):
+        values_to_high_level_objects(2 * u.m, 4, 6, 8, low_level_wcs=wcs)
+
+
 class MinimalHighLevelWCS(HighLevelWCSMixin):
     def __init__(self, low_level_wcs):
         self._low_level_wcs = low_level_wcs
@@ -229,3 +331,27 @@ def test_minimal_mixin_subclass():
     pixel = high_level_wcs.world_to_array_index(*coord)
 
     assert_allclose(pixel, (1, 2))
+
+
+def test_world_to_array_index_nan():
+    # see https://github.com/astropy/astropy/issues/17227
+    wcs1 = WCS(naxis=1)
+    wcs1.wcs.crpix = (1,)
+    wcs1.wcs.set()
+    wcs1.pixel_bounds = [None]
+
+    res1 = wcs1.world_to_array_index(*wcs1.pixel_to_world((5,)))
+    assert not np.any(np.isnan(res1))
+    assert res1.ndim == 0
+    assert res1.item() == 5
+
+    wcs2 = WCS(naxis=2)
+    wcs2.wcs.crpix = (1, 1)
+    wcs2.wcs.set()
+    wcs2.pixel_bounds = [None, (-0.5, 3.5)]
+
+    res2 = wcs2.world_to_array_index(*wcs2.pixel_to_world(5, 5))
+    assert not np.any(np.isnan(res2))
+    assert isinstance(res2, tuple)
+    assert len(res2) == 2
+    assert res2 == (np.iinfo(int).min, 5)

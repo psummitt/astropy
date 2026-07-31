@@ -80,7 +80,7 @@ def sortmore(*args, **kw):
                  [2, 4, 0, 5, 7, 1, 3, 8, 9, 6])
     """
     first = list(args[0])
-    if not len(first):
+    if not first:
         return args
 
     globalkey = kw.get("globalkey")
@@ -101,7 +101,7 @@ def sortmore(*args, **kw):
     if isinstance(key, collections.abc.Callable):
         k = lambda x: (globalkey(*x), key(x[0]))
     elif isinstance(key, tuple):
-        key = (k if k else lambda x: 0 for k in key)
+        key = (k or (lambda x: 0) for k in key)
         k = lambda x: (globalkey(*x),) + tuple(f(z) for (f, z) in zip(key, x))
     else:
         raise KeyError(
@@ -124,5 +124,4 @@ def groupmore(func=None, *its):
     its = sortmore(*its, key=func)
     nfunc = lambda x: func(x[0])
     zipper = itertools.groupby(zip(*its), nfunc)
-    unzipper = ((key, zip(*groups)) for key, groups in zipper)
-    return unzipper
+    return ((key, zip(*groups)) for key, groups in zipper)

@@ -68,6 +68,7 @@ import numpy as np
 
 from astropy import __version__, log
 from astropy.io import fits
+from astropy.io.fits import CompImageHDU
 
 DESCRIPTION = """
 Print the header(s) of a FITS file. Optional arguments allow the desired
@@ -200,10 +201,10 @@ class HeaderFormatter:
         """
         # First we obtain the desired header
         try:
-            if compressed:
+            if compressed and isinstance(self._hdulist[hdukey], CompImageHDU):
                 # In the case of a compressed image, return the header before
                 # decompression (not the default behavior)
-                header = self._hdulist[hdukey]._header
+                header = self._hdulist[hdukey]._bintable.header
             else:
                 header = self._hdulist[hdukey].header
         except (IndexError, KeyError):
@@ -284,7 +285,7 @@ def print_headers_traditional(args):
             print(
                 formatter.parse(args.extensions, args.keyword, args.compressed), end=""
             )
-        except OSError as e:
+        except Exception as e:
             log.error(str(e))
         finally:
             if formatter:
@@ -308,7 +309,7 @@ def print_headers_as_table(args):
             tbl = formatter.parse(args.extensions, args.keyword, args.compressed)
             if tbl:
                 tables.append(tbl)
-        except OSError as e:
+        except Exception as e:
             log.error(str(e))  # file not found or unreadable
         finally:
             if formatter:
@@ -352,7 +353,7 @@ def print_headers_as_comparison(args):
             else:
                 tbl = table.Table([[filename]], names=("filename",))
             tables.append(tbl)
-        except OSError as e:
+        except Exception as e:
             log.error(str(e))  # file not found or unreadable
         finally:
             if formatter:
@@ -403,6 +404,8 @@ def main(args=None):
     parser = argparse.ArgumentParser(
         description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    # TODO: pass suggest_on_error as kwarg when PYTHON_LT_14 is dropped
+    parser.suggest_on_error = True
 
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"

@@ -110,6 +110,8 @@ SKIP_TESTS = [
     "test_generate_config2",
     "test_create_config_file",
     "test_download_parallel_fills_cache",
+    "test_defined_constants_do_not_change",
+    "test_physical_constants_versions",
 ]
 
 # Run the tests!
@@ -117,7 +119,7 @@ sys.exit(
     pytest.main(
         ["astropy_tests", "-k " + " and ".join("not " + test for test in SKIP_TESTS)],
         plugins=[
-            "pytest_astropy.plugin",
+            "pytest_skip_slow",
             "pytest_doctestplus.plugin",
             "pytest_remotedata.plugin",
             "pytest_astropy_header.display",

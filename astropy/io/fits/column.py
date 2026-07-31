@@ -1,29 +1,29 @@
 # Licensed under a 3-clause BSD style license - see PYFITS.rst
 
 import copy
+import math
 import numbers
-import operator
 import re
 import sys
 import warnings
 import weakref
 from collections import OrderedDict
 from contextlib import suppress
-from functools import reduce
 from itertools import pairwise
 from textwrap import indent
 
 import numpy as np
-from numpy import char as chararray
 
-from astropy.utils import isiterable, lazyproperty
+from astropy.utils import lazyproperty
+from astropy.utils.compat import chararray, get_chararray
 from astropy.utils.exceptions import AstropyUserWarning
 
+from ._logical_helpers import _validate_logical_input
 from .card import CARD_LENGTH, Card
 from .util import NotifierMixin, _convert_array, _is_int, cmp, encode_ascii
 from .verify import VerifyError, VerifyWarning
 
-__all__ = ["Column", "ColDefs", "Delayed"]
+__all__ = ["ColDefs", "Column", "Delayed"]
 
 
 # mapping from TFORM data type to numpy data type (code)
@@ -200,7 +200,7 @@ ATTRIBUTE_TO_KEYWORD = OrderedDict(zip(KEYWORD_ATTRIBUTES, KEYWORD_NAMES))
 
 # TFORMn regular expression
 TFORMAT_RE = re.compile(
-    r"(?P<repeat>^[0-9]*)(?P<format>[LXBIJKAEDCMPQ])(?P<option>[!-~]*)", re.I
+    r"(?P<repeat>^[0-9]*)(?P<format>[LXBIJKAEDCMPQ])(?P<option>[!-~]*)", re.IGNORECASE
 )
 
 # TFORMn for ASCII tables; two different versions depending on whether
@@ -577,6 +577,7 @@ class Column(NotifierMixin):
         coord_ref_value=None,
         coord_inc=None,
         time_ref_pos=None,
+        _skip_validation=False,
     ):
         """
         Construct a `Column` by specifying attributes.  All attributes
@@ -692,18 +693,51 @@ class Column(NotifierMixin):
         # pseudo-unsigned int data
         self._pseudo_unsigned_ints = False
 
+        # Restrict logical ('L') column input to bool or |S1 bytes
+        # (with values b'T', b'F', or b'\x00'). Anything else emits an
+        # AstropyDeprecationWarning; out-of-spec |S1 bytes raise.
+        # Internal callers that wrap on-disk storage in an ``int8``
+        # array (e.g. ``ColDefs._init_from_array``) view-cast it to
+        # ``|S1`` before reaching here so the byte-value check applies
+        # without a separate escape-hatch.  ``Delayed`` arrays are
+        # placeholders for a column we have not yet read off the file;
+        # the actual array is swapped in via ``_get_recarray_field``
+        # at ``FITS_rec._from_columns`` and bypasses this __init__, so
+        # validation is unnecessary here -- the data already exists on
+        # disk in a presumed-valid wire format (and legacy 0x00/0x01
+        # heaps are handled separately by
+        # ``_detect_legacy_logical_vla_heap``).  ``_skip_validation`` is
+        # also set by ``ColDefs._init_from_array`` when called from
+        # ``FITS_rec.__array_finalize__``: that path slices an existing
+        # FITS_rec where the data is presumed-valid and would otherwise
+        # pay an O(N) validation cost on every slice (see commit message
+        # for details).
+        if (
+            array is not None
+            and not isinstance(array, Delayed)
+            and not _skip_validation
+        ):
+            fmt_obj = valid_kwargs.get("format")
+            is_fixed_logical = getattr(fmt_obj, "format", None) == "L"
+            is_vla_logical = getattr(fmt_obj, "p_format", None) == "L"
+            if is_vla_logical:
+                for row in array:
+                    _validate_logical_input(row)
+            elif is_fixed_logical:
+                _validate_logical_input(array)
+
         # if the column data is not ndarray, make it to be one, i.e.
         # input arrays can be just list or tuple, not required to be ndarray
         # does not include Object array because there is no guarantee
         # the elements in the object array are consistent.
-        if not isinstance(array, (np.ndarray, chararray.chararray, Delayed)):
+        if not isinstance(array, (np.ndarray, chararray, Delayed)):
             try:  # try to convert to a ndarray first
                 if array is not None:
                     array = np.array(array)
             except Exception:
                 try:  # then try to convert it to a strings array
                     itemsize = int(recformat[1:])
-                    array = chararray.array(array, itemsize=itemsize)
+                    array = get_chararray(array, itemsize=itemsize)
                 except ValueError:
                     # then try variable length array
                     # Note: This includes _FormatQ by inheritance
@@ -903,7 +937,7 @@ class Column(NotifierMixin):
 
         if not isinstance(coord_type, str) or len(coord_type) > 8:
             raise AssertionError(
-                "Coordinate/axis type must be a string of atmost 8 characters."
+                "Coordinate/axis type must be a string of at most 8 characters."
             )
 
     @ColumnAttribute("TCUNI")
@@ -1047,14 +1081,16 @@ class Column(NotifierMixin):
         # Currently we don't have any validation for name, unit, bscale, or
         # bzero so include those by default
         # TODO: Add validation for these keywords, obviously
-        for k, v in [
-            ("name", name),
-            ("unit", unit),
-            ("bscale", bscale),
-            ("bzero", bzero),
-        ]:
-            if v is not None and v != "":
-                valid[k] = v
+        valid |= {
+            k: v
+            for k, v in [
+                ("name", name),
+                ("unit", unit),
+                ("bscale", bscale),
+                ("bzero", bzero),
+            ]
+            if (v is not None and v != "")
+        }
 
         # Validate null option
         # Note: Enough code exists that thinks empty strings are sensible
@@ -1201,7 +1237,7 @@ class Column(NotifierMixin):
                     # TDIMs have different meaning for VLA format,
                     # no warning should be thrown
                     msg = None
-                elif reduce(operator.mul, dims_tuple) > format.repeat:
+                elif math.prod(dims_tuple) > format.repeat:
                     msg = (
                         f"The repeat count of the column format {name!r} for column "
                         f"{format!r} is fewer than the number of elements per the TDIM "
@@ -1225,9 +1261,8 @@ class Column(NotifierMixin):
             elif len(coord_type) > 8:
                 msg = (
                     "Coordinate/axis type option (TCTYPn) must be a string "
-                    f"of atmost 8 characters (got {coord_type!r}). The invalid keyword "
-                    "will be ignored for the purpose of formatting this "
-                    "column."
+                    f"of at most 8 characters (got {coord_type!r}). The invalid "
+                    "keyword will be ignored for the purpose of formatting this column."
                 )
 
             if msg is None:
@@ -1387,13 +1422,18 @@ class Column(NotifierMixin):
                         fsize = dims[-1]
                     else:
                         fsize = np.dtype(format.recformat).itemsize
-                    return chararray.array(array, itemsize=fsize, copy=False)
+                    return get_chararray(array, itemsize=fsize, copy=False)
                 else:
                     return _convert_array(array, np.dtype(format.recformat))
             elif "L" in format:
                 # boolean needs to be scaled back to storage values ('T', 'F')
                 if array.dtype == np.dtype("bool"):
                     return np.where(array == np.False_, ord("F"), ord("T"))
+                elif array.dtype.kind == "S":
+                    # Bytes input (e.g. from reading with logical_as_bytes=True)
+                    # is taken as-is so that NULL (b'\x00') values are preserved
+                    # in storage alongside b'T' and b'F'.
+                    return array.view(np.int8)
                 else:
                     return np.where(array == 0, ord("F"), ord("T"))
             elif "X" in format:
@@ -1492,7 +1532,7 @@ class ColDefs(NotifierMixin):
         elif isinstance(input, np.ndarray) and input.dtype.fields is not None:
             # Construct columns from the fields of a record array
             self._init_from_array(input)
-        elif isiterable(input):
+        elif np.iterable(input):
             # if the input is a list of Columns
             self._init_from_sequence(input)
         elif isinstance(input, _TableBaseHDU):
@@ -1522,6 +1562,26 @@ class ColDefs(NotifierMixin):
         self._init_from_coldefs(columns)
 
     def _init_from_array(self, array):
+        if array.ndim != 1:
+            raise ValueError(
+                f"Input data with shape {array.shape} is not a valid representation "
+                "of a row-oriented table. Expected a 1D array with rows as elements."
+            )
+
+        # When invoked from ``FITS_rec.__array_finalize__`` -- the only
+        # call path that reaches ``_init_from_array`` with a FITS_rec --
+        # the column data has already been validated at the FITS_rec's
+        # original construction (or came from a presumed-valid on-disk
+        # wire format).  Re-running ``_validate_logical_input`` on every
+        # field would pay an O(N) cost on every slice; suppress it here.
+        # ColDefs(FITS_rec_with_coldefs_set) does not reach this branch
+        # (the ColDefs constructor short-circuits to
+        # ``_init_from_coldefs``), so this only fires for the slicing
+        # path.
+        from .fitsrec import FITS_rec
+
+        skip_validation = isinstance(array, FITS_rec)
+
         self.columns = []
         for idx in range(len(array.dtype)):
             cname = array.dtype.names[idx]
@@ -1563,12 +1623,26 @@ class ColDefs(NotifierMixin):
                 elif "K" in format:
                     bzero = np.uint64(2**63)
 
+            col_array = array.view(np.ndarray)[cname]
+            # When a logical ('L') column's recarray field arrives as
+            # ``int8`` storage (e.g. from reading a FITS file), view
+            # it as ``|S1`` so the Column constructor's byte-value
+            # validation runs on the actual on-disk bytes
+            # (b'T'/b'F'/b'\x00') instead of firing the integer 0/1
+            # deprecation warning. ``b1`` (numpy bool) fields are
+            # left as-is and pass the bool branch of the validator.
+            # ``getattr(...) == "L"`` avoids the format object's
+            # ``__eq__`` which would try to reparse "L" through the
+            # ASCII format constructor for ASCII tables.
+            if getattr(format, "format", None) == "L" and col_array.dtype == np.int8:
+                col_array = col_array.view("S1")
             c = Column(
                 name=cname,
                 format=format,
-                array=array.view(np.ndarray)[cname],
+                array=col_array,
                 bzero=bzero,
                 dim=dim,
+                _skip_validation=skip_validation,
             )
             self.columns.append(c)
 
@@ -1754,6 +1828,14 @@ class ColDefs(NotifierMixin):
         else:
             return ColDefs(x)
 
+    def __contains__(self, key):
+        if isinstance(key, str):
+            return key.lower().rstrip() in (n.lower().rstrip() for n in self.names)
+        elif isinstance(key, Column):
+            return key in self.columns
+        else:
+            return False
+
     def __len__(self):
         return len(self.columns)
 
@@ -1788,11 +1870,7 @@ class ColDefs(NotifierMixin):
         if not isinstance(other, (list, tuple)):
             other = [other]
         _other = [_get_index(self.names, key) for key in other]
-        indx = list(range(len(self)))
-        for x in _other:
-            indx.remove(x)
-        tmp = [self[i] for i in indx]
-        return ColDefs(tmp)
+        return ColDefs([self[i] for i in range(len(self)) if i not in _other])
 
     def _update_column_attribute_changed(self, column, attr, old_value, new_value):
         """
@@ -1856,10 +1934,10 @@ class ColDefs(NotifierMixin):
         # Ask the HDU object to load the data before we modify our columns
         self._notify("load_data")
 
-        indx = _get_index(self.names, col_name)
-        col = self.columns[indx]
+        index = _get_index(self.names, col_name)
+        col = self.columns[index]
 
-        del self._arrays[indx]
+        del self._arrays[index]
         # Obliterate caches of certain things
         del self.dtype
         del self._recformats
@@ -1867,7 +1945,7 @@ class ColDefs(NotifierMixin):
         del self.names
         del self.formats
 
-        del self.columns[indx]
+        del self.columns[index]
 
         col._remove_listener(self)
 
@@ -1875,7 +1953,7 @@ class ColDefs(NotifierMixin):
         # any other listeners) that the column has been removed
         # Just send a reference to self, and the index of the column that was
         # removed
-        self._notify("column_removed", self, indx)
+        self._notify("column_removed", self, index)
         return self
 
     def change_attrib(self, col_name, attrib, new_value):
@@ -2072,7 +2150,7 @@ class _VLF(np.ndarray):
             try:
                 # this handles ['abc'] and [['a','b','c']]
                 # equally, beautiful!
-                input = [chararray.array(x, itemsize=1) for x in input]
+                input = [get_chararray(x, itemsize=1) for x in input]
             except Exception:
                 raise ValueError(f"Inconsistent input data array: {input}")
 
@@ -2095,16 +2173,14 @@ class _VLF(np.ndarray):
         """
         if isinstance(value, np.ndarray) and value.dtype == self.dtype:
             pass
-        elif isinstance(value, chararray.chararray) and value.itemsize == 1:
+        elif isinstance(value, chararray) and value.itemsize == 1:
             pass
         elif self.element_dtype == "S":
-            value = chararray.array(value, itemsize=1)
+            value = get_chararray(value, itemsize=1)
         else:
             value = np.array(value, dtype=self.element_dtype)
         np.ndarray.__setitem__(self, key, value)
-        nelem = value.shape
-        len_value = np.prod(nelem)
-        self.max = max(self.max, len_value)
+        self.max = max(self.max, value.size)
 
     def tolist(self):
         return [list(item) for item in super().tolist()]
@@ -2133,26 +2209,20 @@ def _get_index(names, key):
         field('Xyz'), etc. will get this field.
     """
     if _is_int(key):
-        indx = int(key)
-    elif isinstance(key, str):
-        # try to find exact match first
-        try:
-            indx = names.index(key.rstrip())
-        except ValueError:
-            # try to match case-insentively,
-            _key = key.lower().rstrip()
-            names = [n.lower().rstrip() for n in names]
-            count = names.count(_key)  # occurrence of _key in names
-            if count == 1:
-                indx = names.index(_key)
-            elif count == 0:
-                raise KeyError(f"Key '{key}' does not exist.")
-            else:  # multiple match
-                raise KeyError(f"Ambiguous key name '{key}'.")
-    else:
+        return int(key)
+    if not isinstance(key, str):
         raise KeyError(f"Illegal key '{key!r}'.")
-
-    return indx
+    try:  # try to find exact match first
+        return names.index(key.rstrip())
+    except ValueError:  # try to match case-insentively,
+        _key = key.lower().rstrip()
+        names = [n.lower().rstrip() for n in names]
+        count = names.count(_key)  # occurrence of _key in names
+        if count == 1:
+            return names.index(_key)
+        if count == 0:
+            raise KeyError(f"Key '{key}' does not exist.")
+        raise KeyError(f"Ambiguous key name '{key}'.")  # multiple match
 
 
 def _unwrapx(input, output, repeat):
@@ -2242,7 +2312,22 @@ def _makep(array, descr_output, format, nrows=None):
     if not nrows:
         nrows = len(array)
 
-    data_output = _VLF([None] * nrows, dtype=format.dtype)
+    # Logical VLAs ('PL'/'QL') are stored in the _VLF as user-facing bool
+    # values. The FITS L wire format (ord('T')/ord('F')) is produced at
+    # heap-write time in FITS_rec._get_heap_data.
+    # If the input rows are already |S1 byte arrays (produced by reading
+    # with ``logical_as_bytes=True``), the bytes are preserved verbatim
+    # so NULL (b'\x00') survives a round-trip.
+    is_logical = format.format == "L"
+    is_logical_bytes = is_logical and any(
+        isinstance(row, np.ndarray) and row.dtype.kind == "S" for row in array
+    )
+    if is_logical:
+        element_dtype = "S1" if is_logical_bytes else "b1"
+    else:
+        element_dtype = format.dtype
+
+    data_output = _VLF([None] * nrows, dtype=element_dtype)
 
     if format.dtype == "S":
         _nbytes = 1
@@ -2255,16 +2340,38 @@ def _makep(array, descr_output, format, nrows=None):
         else:
             if format.dtype == "S":
                 rowval = " " * data_output.max
+            elif is_logical:
+                rowval = np.zeros(data_output.max, dtype=element_dtype)
             else:
                 rowval = [0] * data_output.max
         if format.dtype == "S":
-            data_output[idx] = chararray.array(encode_ascii(rowval), itemsize=1)
+            data_output[idx] = get_chararray(encode_ascii(rowval), itemsize=1)
+        elif is_logical_bytes:
+            # |S1 byte input is preserved verbatim so NULL (b'\x00')
+            # survives a round-trip.
+            data_output[idx] = np.asarray(rowval, dtype="S1")
+        elif is_logical:
+            # Route through int8 first so non-numeric/non-bool inputs
+            # (strings, None, ...) raise at write time, matching the
+            # behavior of astropy <= 7.2.0; bypassing this and using
+            # ``astype(bool)`` directly would silently coerce e.g.
+            # ``["T", "F"]`` to ``[True, True]``.
+            data_output[idx] = np.array(rowval, dtype=np.int8).astype(bool, copy=False)
         else:
             data_output[idx] = np.array(rowval, dtype=format.dtype)
 
-        nelem = data_output[idx].shape
-        descr_output[idx, 0] = np.prod(nelem)
+        descr_output[idx, 0] = data_output[idx].size
         descr_output[idx, 1] = _offset
+
+        # detect overflow when using P format
+        if (
+            descr_output.dtype == np.int32
+            and int(descr_output[idx, 0]) * _nbytes >= 2**31
+        ):
+            raise ValueError(
+                "The heapsize limit for 'P' format has been reached. "
+                "Please consider using the 'Q' format for your file."
+            )
         _offset += descr_output[idx, 0] * _nbytes
 
     return data_output
@@ -2470,7 +2577,7 @@ def _convert_record2fits(format):
     ndims = len(shape)
     repeat = 1
     if ndims > 0:
-        nel = np.array(shape, dtype="i8").prod()
+        nel = math.prod(shape)
         if nel > 1:
             repeat = nel
 

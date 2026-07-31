@@ -6,8 +6,6 @@ from operator import index as operator_index
 
 import numpy as np
 
-from astropy.utils.compat import COPY_IF_NEEDED
-
 
 class Row:
     """A class to represent one row of a Table object.
@@ -26,9 +24,9 @@ class Row:
       ----- -----
           2     4
       >>> row['a']
-      2
+      np.int32(2)
       >>> row[1]
-      4
+      np.int32(4)
     """
 
     def __init__(self, table, index):
@@ -90,7 +88,7 @@ class Row:
             )
         return self.as_void() != other
 
-    def __array__(self, dtype=None, copy=COPY_IF_NEEDED):
+    def __array__(self, dtype=None, copy=None):
         """Support converting Row to np.array via np.array(table).
 
         Coercion to a different dtype via np.array(table, dtype) is not
@@ -130,13 +128,13 @@ class Row:
         Examples
         --------
         >>> from astropy.table import Table
-        >>> t = Table({"a": [2, 3, 5], "b": [7, 11, 13]})
+        >>> t = Table({"a": [2., 3., 5.], "b": [7., 11., 13.]})
         >>> t[0].get("a")
-        2
-        >>> t[1].get("b", 0)
-        11
-        >>> t[2].get("c", 0)
-        0
+        np.float64(2.0)
+        >>> t[1].get("b", 0.)
+        np.float64(11.0)
+        >>> t[2].get("c", 0.)
+        0.0
         """
         return self[key] if key in self._table.columns else default
 

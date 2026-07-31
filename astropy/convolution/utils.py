@@ -4,10 +4,10 @@ import numpy as np
 from astropy.modeling.core import Model, custom_model
 
 __all__ = [
-    "discretize_model",
+    "KernelArithmeticError",
     "KernelError",
     "KernelSizeError",
-    "KernelArithmeticError",
+    "discretize_model",
 ]
 
 
@@ -100,13 +100,13 @@ def discretize_model(model, x_range, y_range=None, mode="center", factor=10):
         evaluated. The upper bound is non-inclusive. A ``x_range`` of
         ``(0, 3)`` means the model will be evaluated at x pixels 0, 1,
         and 2. The difference between the upper and lower bound must be
-        a whole number so that the output array size is well defined.
+        a whole number so that the output array size is well-defined.
     y_range : 2-tuple or `None`, optional
         Lower and upper bounds of y pixel values at which the model is
         evaluated. The upper bound is non-inclusive. A ``y_range`` of
         ``(0, 3)`` means the model will be evaluated at y pixels of 0,
         1, and 2. The difference between the upper and lower bound must
-        be a whole number so that the output array size is well defined.
+        be a whole number so that the output array size is well-defined.
         ``y_range`` is necessary only for 2D models.
     mode : {'center', 'linear_interp', 'oversample', 'integrate'}, optional
         One of the following modes:
@@ -201,28 +201,31 @@ def discretize_model(model, x_range, y_range=None, mode="center", factor=10):
         raise ValueError("y_range must be specified for a 2D model")
     if ndim == 1 and y_range is not None:
         raise ValueError("y_range should not be input for a 1D model")
-    if mode == "center":
-        if ndim == 1:
-            return discretize_center_1D(model, x_range)
-        if ndim == 2:
-            return discretize_center_2D(model, x_range, y_range)
-    elif mode == "linear_interp":
-        if ndim == 1:
-            return discretize_linear_1D(model, x_range)
-        if ndim == 2:
-            return discretize_bilinear_2D(model, x_range, y_range)
-    elif mode == "oversample":
-        if ndim == 1:
-            return discretize_oversample_1D(model, x_range, factor)
-        if ndim == 2:
-            return discretize_oversample_2D(model, x_range, y_range, factor)
-    elif mode == "integrate":
-        if ndim == 1:
-            return discretize_integrate_1D(model, x_range)
-        if ndim == 2:
-            return discretize_integrate_2D(model, x_range, y_range)
-    else:
-        raise ValueError("Invalid mode for discretize_model.")
+
+    match (mode, ndim):
+        case ("center", 1):
+            result = discretize_center_1D(model, x_range)
+        case ("center", 2):
+            result = discretize_center_2D(model, x_range, y_range)
+        case ("linear_interp", 1):
+            result = discretize_linear_1D(model, x_range)
+        case ("linear_interp", 2):
+            result = discretize_bilinear_2D(model, x_range, y_range)
+        case ("oversample", 1):
+            result = discretize_oversample_1D(model, x_range, factor)
+        case ("oversample", 2):
+            result = discretize_oversample_2D(model, x_range, y_range, factor)
+        case ("integrate", 1):
+            result = discretize_integrate_1D(model, x_range)
+        case ("integrate", 2):
+            result = discretize_integrate_2D(model, x_range, y_range)
+        case _:
+            raise ValueError(
+                "Invalid (mode, ndim) combination for discretize_model. "
+                f"Got {mode=}, {ndim=}"
+            )
+
+    return result
 
 
 def discretize_center_1D(model, x_range):

@@ -2,11 +2,13 @@
 
 import inspect
 import os
+import pydoc
 import re
+import sys
 
 from .base import IORegistryError
 
-__all__ = ["UnifiedReadWriteMethod", "UnifiedReadWrite"]
+__all__ = ["UnifiedReadWrite", "UnifiedReadWriteMethod"]
 
 
 # -----------------------------------------------------------------------------
@@ -59,13 +61,24 @@ class UnifiedReadWrite:
         Instead one can supplied a file handle object as ``out`` and the output
         will be written to that handle.
 
+        Raises
+        ------
+        RuntimeError
+            If called within a python runtime running with optimization level >= 2
+            (-OO CLI flag).
+
         Parameters
         ----------
         format : str
             Unified I/O format name, e.g. 'fits' or 'ascii.ecsv'
-        out : None or path-like
+        out : None or file-like
             Output destination (default is stdout via a pager)
         """
+        if sys.flags.optimize >= 2:
+            raise RuntimeError(
+                "The help method is not available under Python's optimized mode."
+            )
+
         cls = self._cls
         method_name = self._method_name
 
@@ -100,8 +113,6 @@ class UnifiedReadWrite:
                 reader_doc += inspect.cleandoc(doc)
 
         if out is None:
-            import pydoc
-
             pydoc.pager(reader_doc)
         else:
             out.write(reader_doc)
@@ -144,6 +155,9 @@ class UnifiedReadWriteMethod(property):
         Class that defines read or write functionality
 
     """
+
+    def __init__(self, readwritecls: UnifiedReadWrite, /) -> None:  # type: ignore[arg-type]
+        super().__init__(fget=readwritecls)
 
     # We subclass property to ensure that __set__ is defined and that,
     # therefore, we are a data descriptor, which cannot be overridden.

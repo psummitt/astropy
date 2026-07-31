@@ -10,22 +10,25 @@
 #include "wcs.h"
 
 static void
-PySip_dealloc(
-    PySip* self) {
+Sip_dealloc(
+    Sip* self) {
 
   sip_free(&self->x);
-  Py_TYPE(self)->tp_free((PyObject*)self);
+  PyTypeObject *tp = Py_TYPE((PyObject*)self);
+  freefunc free_func = PyType_GetSlot(tp, Py_tp_free);
+  free_func((PyObject*)self);
+  Py_DECREF(tp);
 }
 
 /*@null@*/ static PyObject *
-PySip_new(
+Sip_new(
     PyTypeObject* type,
     /*@unused@*/ PyObject* args,
     /*@unused@*/ PyObject* kwds) {
 
-  PySip* self;
-
-  self = (PySip*)type->tp_alloc(type, 0);
+  Sip* self;
+  allocfunc alloc_func = PyType_GetSlot(type, Py_tp_alloc);
+  self = (Sip*)alloc_func(type, 0);
   if (self != NULL) {
     sip_clear(&self->x);
   }
@@ -65,8 +68,8 @@ convert_matrix(
 }
 
 static int
-PySip_init(
-    PySip* self,
+Sip_init(
+    Sip* self,
     PyObject* args,
     /*@unused@*/ PyObject* kwds) {
 
@@ -121,11 +124,11 @@ PySip_init(
                     PyArray_DATA(crpix));
 
  exit:
-  Py_XDECREF(a);
-  Py_XDECREF(b);
-  Py_XDECREF(ap);
-  Py_XDECREF(bp);
-  Py_XDECREF(crpix);
+  Py_XDECREF((PyObject*)a);
+  Py_XDECREF((PyObject*)b);
+  Py_XDECREF((PyObject*)ap);
+  Py_XDECREF((PyObject*)bp);
+  Py_XDECREF((PyObject*)crpix);
 
   if (status == 0) {
     return 0;
@@ -139,8 +142,8 @@ PySip_init(
 }
 
 /*@null@*/ static PyObject*
-PySip_pix2foc(
-    PySip* self,
+Sip_pix2foc(
+    Sip* self,
     PyObject* args,
     PyObject* kwds) {
 
@@ -205,12 +208,12 @@ PySip_pix2foc(
 
  exit:
 
-  Py_XDECREF(pixcrd);
+  Py_XDECREF((PyObject*)pixcrd);
 
   if (status == 0) {
     return (PyObject*)foccrd;
   } else {
-    Py_XDECREF(foccrd);
+    Py_XDECREF((PyObject*)foccrd);
     if (status == -1) {
       /* Exception already set */
       return NULL;
@@ -222,8 +225,8 @@ PySip_pix2foc(
 }
 
 /*@null@*/ static PyObject*
-PySip_foc2pix(
-    PySip* self,
+Sip_foc2pix(
+    Sip* self,
     PyObject* args,
     PyObject* kwds) {
 
@@ -295,12 +298,12 @@ PySip_foc2pix(
   Py_END_ALLOW_THREADS
 
  exit:
-  Py_XDECREF(foccrd);
+  Py_XDECREF((PyObject*)foccrd);
 
   if (status == 0) {
     return (PyObject*)pixcrd;
   } else {
-    Py_XDECREF(pixcrd);
+    Py_XDECREF((PyObject*)pixcrd);
     if (status == -1) {
       /* Exception already set */
       return NULL;
@@ -312,8 +315,8 @@ PySip_foc2pix(
 }
 
 /*@null@*/ static PyObject*
-PySip_get_a(
-    PySip* self,
+Sip_get_a(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   npy_intp dims[2];
@@ -330,8 +333,8 @@ PySip_get_a(
 }
 
 /*@null@*/ static PyObject*
-PySip_get_b(
-    PySip* self,
+Sip_get_b(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   npy_intp dims[2];
@@ -348,8 +351,8 @@ PySip_get_b(
 }
 
 /*@null@*/ static PyObject*
-PySip_get_ap(
-    PySip* self,
+Sip_get_ap(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   npy_intp dims[2];
@@ -366,8 +369,8 @@ PySip_get_ap(
 }
 
 /*@null@*/ static PyObject*
-PySip_get_bp(
-    PySip* self,
+Sip_get_bp(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   npy_intp dims[2];
@@ -384,40 +387,40 @@ PySip_get_bp(
 }
 
 static PyObject*
-PySip_get_a_order(
-    PySip* self,
+Sip_get_a_order(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   return get_int("a_order", (long int)self->x.a_order);
 }
 
 static PyObject*
-PySip_get_b_order(
-    PySip* self,
+Sip_get_b_order(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   return get_int("b_order", (long int)self->x.b_order);
 }
 
 static PyObject*
-PySip_get_ap_order(
-    PySip* self,
+Sip_get_ap_order(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   return get_int("ap_order", (long int)self->x.ap_order);
 }
 
 static PyObject*
-PySip_get_bp_order(
-    PySip* self,
+Sip_get_bp_order(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   return get_int("bp_order", (long int)self->x.bp_order);
 }
 
 static PyObject*
-PySip_get_crpix(
-    PySip* self,
+Sip_get_crpix(
+    Sip* self,
     /*@unused@*/ void* closure) {
 
   Py_ssize_t naxis = 2;
@@ -426,14 +429,14 @@ PySip_get_crpix(
 }
 
 static PyObject*
-PySip___copy__(
-    PySip* self,
+Sip___copy__(
+    Sip* self,
     /*@unused@*/ PyObject* args,
     /*@unused@*/ PyObject* kwds) {
 
-  PySip* copy         = NULL;
+  Sip* copy         = NULL;
 
-  copy = (PySip*)PySip_new(&PySipType, NULL, NULL);
+  copy = (Sip*)Sip_new((PyTypeObject*)SipType, NULL, NULL);
   if (copy == NULL) {
     return NULL;
   }
@@ -452,75 +455,53 @@ PySip___copy__(
 }
 
 
-static PyGetSetDef PySip_getset[] = {
-  {"a", (getter)PySip_get_a, NULL, (char *)doc_a},
-  {"a_order", (getter)PySip_get_a_order, NULL, (char *)doc_a_order},
-  {"b", (getter)PySip_get_b, NULL, (char *)doc_b},
-  {"b_order", (getter)PySip_get_b_order, NULL, (char *)doc_b_order},
-  {"ap", (getter)PySip_get_ap, NULL, (char *)doc_ap},
-  {"ap_order", (getter)PySip_get_ap_order, NULL, (char *)doc_ap_order},
-  {"bp", (getter)PySip_get_bp, NULL, (char *)doc_bp},
-  {"bp_order", (getter)PySip_get_bp_order, NULL, (char *)doc_bp_order},
-  {"crpix", (getter)PySip_get_crpix, NULL, (char *)doc_crpix},
+static PyGetSetDef Sip_getset[] = {
+  {"a", (getter)Sip_get_a, NULL, (char *)doc_a},
+  {"a_order", (getter)Sip_get_a_order, NULL, (char *)doc_a_order},
+  {"b", (getter)Sip_get_b, NULL, (char *)doc_b},
+  {"b_order", (getter)Sip_get_b_order, NULL, (char *)doc_b_order},
+  {"ap", (getter)Sip_get_ap, NULL, (char *)doc_ap},
+  {"ap_order", (getter)Sip_get_ap_order, NULL, (char *)doc_ap_order},
+  {"bp", (getter)Sip_get_bp, NULL, (char *)doc_bp},
+  {"bp_order", (getter)Sip_get_bp_order, NULL, (char *)doc_bp_order},
+  {"crpix", (getter)Sip_get_crpix, NULL, (char *)doc_crpix},
   {NULL}
 };
 
-static PyMethodDef PySip_methods[] = {
-  {"__copy__", (PyCFunction)PySip___copy__, METH_NOARGS, NULL},
-  {"__deepcopy__", (PyCFunction)PySip___copy__, METH_O, NULL},
-  {"pix2foc", (PyCFunction)PySip_pix2foc, METH_VARARGS|METH_KEYWORDS, doc_sip_pix2foc},
-  {"foc2pix", (PyCFunction)PySip_foc2pix, METH_VARARGS|METH_KEYWORDS, doc_sip_foc2pix},
+static PyMethodDef Sip_methods[] = {
+  {"__copy__", (PyCFunction)Sip___copy__, METH_NOARGS, NULL},
+  {"__deepcopy__", (PyCFunction)Sip___copy__, METH_O, NULL},
+  {"pix2foc", (PyCFunction)Sip_pix2foc, METH_VARARGS|METH_KEYWORDS, doc_sip_pix2foc},
+  {"foc2pix", (PyCFunction)Sip_foc2pix, METH_VARARGS|METH_KEYWORDS, doc_sip_foc2pix},
   {NULL}
 };
 
-PyTypeObject PySipType = {
-  PyVarObject_HEAD_INIT(NULL, 0)
-  "astropy.wcs.Sip",            /*tp_name*/
-  sizeof(PySip),                /*tp_basicsize*/
-  0,                            /*tp_itemsize*/
-  (destructor)PySip_dealloc,    /*tp_dealloc*/
-  0,                            /*tp_print*/
-  0,                            /*tp_getattr*/
-  0,                            /*tp_setattr*/
-  0,                            /*tp_compare*/
-  0,                            /*tp_repr*/
-  0,                            /*tp_as_number*/
-  0,                            /*tp_as_sequence*/
-  0,                            /*tp_as_mapping*/
-  0,                            /*tp_hash */
-  0,                            /*tp_call*/
-  0,                            /*tp_str*/
-  0,                            /*tp_getattro*/
-  0,                            /*tp_setattro*/
-  0,                            /*tp_as_buffer*/
-  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
-  doc_Sip,                      /* tp_doc */
-  0,                            /* tp_traverse */
-  0,                            /* tp_clear */
-  0,                            /* tp_richcompare */
-  0,                            /* tp_weaklistoffset */
-  0,                            /* tp_iter */
-  0,                            /* tp_iternext */
-  PySip_methods,                /* tp_methods */
-  0,                            /* tp_members */
-  PySip_getset,                 /* tp_getset */
-  0,                            /* tp_base */
-  0,                            /* tp_dict */
-  0,                            /* tp_descr_get */
-  0,                            /* tp_descr_set */
-  0,                            /* tp_dictoffset */
-  (initproc)PySip_init,         /* tp_init */
-  0,                            /* tp_alloc */
-  PySip_new,                    /* tp_new */
+static PyType_Spec SipType_spec = {
+  .name = "astropy.wcs.Sip",
+  .basicsize = sizeof(Sip),
+  .itemsize = 0,
+  .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_IMMUTABLETYPE,
+  .slots = (PyType_Slot[]){
+    {Py_tp_dealloc, (destructor)Sip_dealloc},
+    {Py_tp_doc, doc_Sip},
+    {Py_tp_methods, Sip_methods},
+    {Py_tp_getset, Sip_getset},
+    {Py_tp_init, (initproc)Sip_init},
+    {Py_tp_new, Sip_new},
+    {0, NULL},
+  },
 };
+
+PyObject* SipType = NULL;
 
 int
 _setup_sip_type(
     PyObject* m) {
 
-  if (PyType_Ready(&PySipType) < 0)
+  SipType = PyType_FromSpec(&SipType_spec);
+
+  if (SipType == NULL)
     return -1;
 
-  Py_INCREF(&PySipType);
-  return PyModule_AddObject(m, "Sip", (PyObject *)&PySipType);
+  return PyModule_AddObject(m, "Sip", SipType);
 }

@@ -19,15 +19,14 @@ from astropy.coordinates.solar_system import (
     get_body,
     get_body_barycentric,
     get_body_barycentric_posvel,
-    get_moon,
     solar_system_ephemeris,
 )
 from astropy.tests.helper import CI, assert_quantity_allclose
 from astropy.time import Time
 from astropy.units import allclose as quantity_allclose
+from astropy.utils import minversion
 from astropy.utils.compat.optional_deps import HAS_JPLEPHEM, HAS_SKYFIELD
 from astropy.utils.data import download_file, get_pkg_data_filename
-from astropy.utils.exceptions import AstropyDeprecationWarning
 
 if HAS_SKYFIELD:
     from skyfield.api import Loader
@@ -359,12 +358,12 @@ def test_ephemeris_non_existing_url(monkeypatch):
         raise HTTPError(code=404, msg="Not Found", fp=None, hdrs=None, url="")
 
     monkeypatch.setattr("urllib.request.OpenerDirector.open", request_invalid_url)
-    with pytest.raises(HTTPError, match="^HTTP Error 404: Not Found$"):
-        get_body(
-            "earth",
-            time=Time("1960-01-12 00:00"),
-            ephemeris="https://www.astropy.org/path/to/nonexisting/file.bsp",
-        )
+    url = "https://www.astropy.org/path/to/nonexisting/file.bsp"
+    with pytest.raises(
+        HTTPError,
+        match=f"^HTTP Error 404: Not Found\nrequested URL: {url}$",
+    ):
+        get_body("earth", time=Time("1960-01-12 00:00"), ephemeris=url)
 
 
 @pytest.mark.skipif(not HAS_JPLEPHEM, reason="requires jplephem")
@@ -373,7 +372,10 @@ def test_ephemeris_non_existing_url(monkeypatch):
     [
         pytest.param(
             "de001",
-            pytest.raises(HTTPError, match="^HTTP Error 404: Not Found$"),
+            pytest.raises(
+                HTTPError,
+                match="^HTTP Error 404: Not Found\nrequested URL: https://",
+            ),
             marks=pytest.mark.remote_data,
             id="non_existing_JPL_ephemeris_version",
         ),
@@ -397,12 +399,13 @@ def test_ephemeris_wrong_input(ephemeris, expected_error):
         get_body("earth", Time("1960-01-12 00:00"), ephemeris=ephemeris)
 
 
+# jplephem<2.23 leaves the file open (a ResourceWarning is emitted)
+@pytest.mark.filterwarnings(
+    "error" if minversion("jplephem", "2.23") else "ignore", category=ResourceWarning
+)
 @pytest.mark.skipif(not HAS_JPLEPHEM, reason="requires jplephem")
 def test_ephemeris_local_file_not_ephemeris():
-    # NOTE: This test currently leaves the file open (ResourceWarning).
-    # To fix this issue, an upstream fix is required in jplephem
-    # package.
-    with pytest.warns(ResourceWarning), pytest.raises(ValueError, match="^file starts"):
+    with pytest.raises(ValueError, match="^file starts"):
         get_body("earth", Time("1960-01-12 00:00"), ephemeris=__file__)
 
 
@@ -421,15 +424,6 @@ def test_get_body_accounts_for_location_on_Earth():
 
     difference = (icrs_sun_from_alma - icrs_sun_from_geocentre).norm()
     assert_quantity_allclose(difference, 0.13046941 * u.m, atol=1 * u.mm)
-
-
-def test_get_moon_deprecation():
-    time_now = Time.now()
-    with pytest.warns(
-        AstropyDeprecationWarning, match=r'Use get_body\("moon"\) instead\.$'
-    ):
-        moon = get_moon(time_now)
-    assert moon == get_body("moon", time_now)
 
 
 @pytest.mark.remote_data

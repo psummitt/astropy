@@ -27,7 +27,6 @@ from astropy.utils import unbroadcast
 from astropy.utils.compat.optional_deps import HAS_SCIPY
 from astropy.utils.data import get_pkg_data_contents, get_pkg_data_filename
 from astropy.utils.exceptions import AstropyUserWarning
-from astropy.wcs import _wcs
 from astropy.wcs.utils import (
     FRAME_WCS_MAPPINGS,
     WCS_FRAME_MAPPINGS,
@@ -51,6 +50,7 @@ from astropy.wcs.utils import (
 )
 from astropy.wcs.wcs import (
     WCS,
+    WCSLIB_VERSION,
     WCSSUB_LATITUDE,
     WCSSUB_LONGITUDE,
     DistortionLookupTable,
@@ -290,6 +290,36 @@ def test_slice_wcs():
 
     with pytest.raises(IndexError, match="Slicing WCS with a step is not supported."):
         mywcs[0, ::2]
+
+
+def test_slice_nd():
+    # Regression test for a bug that caused slicing to not work correctly for
+    # WCS with more than 2 dimensions.
+
+    sub = WCS(naxis=3)[:, :, :]
+    assert isinstance(sub, WCS)
+
+
+def test_slice_ellipsis():
+    # Regression test for a bug that caused slicing with an ellipsis to not
+    # return a WCS object but a SlicedFITSWCS instead
+
+    sub = WCS(naxis=3)[...]
+    assert isinstance(sub, WCS)
+
+
+def test_slice_drop_dimensions_order():
+    # Regression test for a bug that caused WCS.slice to ignore
+    # ``numpy_order=False`` if dimensions were dropped.
+
+    wcs = WCS(naxis=3)
+    wcs.wcs.ctype = "RA---TAN", "DEC--TAN", "FREQ"
+
+    wcs_sliced_1 = wcs.slice([0, slice(None), slice(None)], numpy_order=True)
+    assert wcs_sliced_1.world_axis_physical_types == ["pos.eq.ra", "pos.eq.dec"]
+
+    wcs_sliced_2 = wcs.slice([slice(None), slice(None), 0], numpy_order=False)
+    assert wcs_sliced_2.world_axis_physical_types == ["pos.eq.ra", "pos.eq.dec"]
 
 
 def test_axis_names():
@@ -932,6 +962,38 @@ def test_local_pixel_derivatives(spatial_wcs_2d_small_angle):
     np.testing.assert_allclose(derivs[not_diag].flat, [0, 0], atol=1e-8)
 
 
+def test_local_pixel_derivatives_cube():
+    cube_wcs = WCS(naxis=3)
+    cube_wcs.wcs.ctype = "RA---TAN", "DEC--TAN", "FREQ"
+    cube_wcs.wcs.crval = 10, 20, 30
+    cube_wcs.wcs.cdelt = 0.0001, 0.0001, 0.01
+    cube_wcs.wcs.cunit = "deg", "deg", "GHz"
+    cube_wcs.wcs.set()
+
+    derivs = local_partial_pixel_derivatives(cube_wcs, 0, 0, 0)
+    np.testing.assert_allclose(
+        derivs, [[0.0001, 0, 0], [0, 0.0001, 0], [0, 0, 1e7]], rtol=0.1, atol=1e-5
+    )
+
+    derivs = local_partial_pixel_derivatives(cube_wcs, 0, 0, 0, normalize_by_world=True)
+    np.testing.assert_allclose(
+        derivs, [[1, 0, 0], [0, 1, 0], [0, 0, 1]], rtol=0.1, atol=1e-5
+    )
+
+    # Slice WCS so that there are two pixel and three world coordinates
+    sliced_wcs = cube_wcs[:, 0, :]
+
+    derivs = local_partial_pixel_derivatives(sliced_wcs, 0, 0, 0)
+    np.testing.assert_allclose(
+        derivs, [[0.0001, 0], [0, 0], [0, 1e7]], rtol=0.1, atol=1e-5
+    )
+
+    derivs = local_partial_pixel_derivatives(
+        sliced_wcs, 0, 0, 0, normalize_by_world=True
+    )
+    np.testing.assert_allclose(derivs, [[1, 0], [1, 0], [0, 1]], rtol=0.1, atol=1e-5)
+
+
 def test_pixel_to_world_correlation_matrix_celestial():
     wcs = WCS(naxis=2)
     wcs.wcs.ctype = "RA---TAN", "DEC--TAN"
@@ -1162,8 +1224,7 @@ def test_pixel_to_pixel():
     wcs_out.wcs.set()
 
     # First try with scalars
-    with pytest.warns(AstropyUserWarning, match="No observer defined on WCS"):
-        x, y, z = pixel_to_pixel(wcs_in, wcs_out, 1, 2, 3)
+    x, y, z = pixel_to_pixel(wcs_in, wcs_out, 1, 2, 3)
     assert x.shape == ()
     assert y.shape == ()
     assert z.shape == ()
@@ -1173,8 +1234,7 @@ def test_pixel_to_pixel():
     y = np.linspace(10, 20, 20)
     z = np.linspace(10, 20, 30)
     Z1, Y1, X1 = np.meshgrid(z, y, x, indexing="ij", copy=False)
-    with pytest.warns(AstropyUserWarning, match="No observer defined on WCS"):
-        X2, Y2, Z2 = pixel_to_pixel(wcs_in, wcs_out, X1, Y1, Z1)
+    X2, Y2, Z2 = pixel_to_pixel(wcs_in, wcs_out, X1, Y1, Z1)
 
     # The final arrays should have the correct shape
     assert X2.shape == (30, 20, 10)
@@ -1187,8 +1247,7 @@ def test_pixel_to_pixel():
     assert unbroadcast(Z2).shape == (20, 1)
 
     # We can put the values back through the function to ensure round-tripping
-    with pytest.warns(AstropyUserWarning, match="No observer defined on WCS"):
-        X3, Y3, Z3 = pixel_to_pixel(wcs_out, wcs_in, X2, Y2, Z2)
+    X3, Y3, Z3 = pixel_to_pixel(wcs_out, wcs_in, X2, Y2, Z2)
 
     # The final arrays should have the correct shape
     assert X2.shape == (30, 20, 10)
@@ -1582,7 +1641,7 @@ def test_fit_wcs_from_points_returned_object_attributes():
 @pytest.mark.parametrize("x_in,y_in", [[0, 0], [np.arange(5), np.arange(5)]])
 def test_pixel_to_world_itrs(x_in, y_in):
     """Regression test for https://github.com/astropy/astropy/pull/9609"""
-    if Version(_wcs.__version__) >= Version("7.4"):
+    if Version(WCSLIB_VERSION) >= Version("7.4"):
         ctx = pytest.warns(
             FITSFixedWarning,
             match=(

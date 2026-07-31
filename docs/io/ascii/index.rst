@@ -3,19 +3,28 @@
 .. _io-ascii:
 
 *********************************
-ASCII Tables (`astropy.io.ascii`)
+Text Tables (`astropy.io.ascii`)
 *********************************
 
-Introduction
-============
-
 `astropy.io.ascii` provides methods for reading and writing a wide range of
-ASCII data table formats via built-in :ref:`extension_reader_classes`. The
+text data table formats via built-in :ref:`extension_reader_classes`. The
 emphasis is on flexibility and convenience of use, although readers can
 optionally use a less flexible C-based engine for reading and writing for
-improved performance. This subpackage was originally developed as ``asciitable``.
+improved performance.
 
-The following shows a few of the ASCII formats that are available, while the
+.. note::
+
+    It is strongly encouraged to use the :ref:`Unified I/O Text Tables
+    <unified_table_text>` interface rather than using :mod:`astropy.io.ascii` directly.
+
+    For reading large CSV files, the astropy :ref:`PyArrow CSV <table_io_pyarrow_csv>`
+    reader is the fastest option, while for writing large data tables to CSV, the
+    :ref:`Table - Pandas interface <pandas>` is an option to consider.
+
+    Additional information is available in the :ref:`Unified I/O <table_io>` and
+    :ref:`Unified I/O Table Data <read_write_tables>` pages.
+
+The following shows a few of the text formats that are available, while the
 section on `Supported formats`_ contains the full list.
 
 * :class:`~astropy.io.ascii.Basic`: basic table with customizable delimiters and header configurations
@@ -26,21 +35,15 @@ section on `Supported formats`_ contains the full list.
 * :class:`~astropy.io.ascii.Ipac`: `IPAC format table <https://irsa.ipac.caltech.edu/applications/DDGEN/Doc/ipac_tbl.html>`_
 * :class:`~astropy.io.ascii.HTML`: HTML format table contained in a <table> tag
 * :class:`~astropy.io.ascii.Latex`: LaTeX table with datavalue in the ``tabular`` environment
+* :class:`~astropy.io.ascii.Mesa`: MESA stellar evolution code output format
+
 * :class:`~astropy.io.ascii.Mrt`: AAS `Machine-Readable Tables (MRT) <https://journals.aas.org/mrt-standards/>`_)
 * :class:`~astropy.io.ascii.SExtractor`: `SExtractor format table <https://sextractor.readthedocs.io/en/latest/>`_
 
 The strength of `astropy.io.ascii` is the support for astronomy-specific
 formats (often with metadata) and specialized data types such as
 :ref:`SkyCoord <astropy-coordinates-high-level>`, :ref:`Time
-<astropy-time>`, and :ref:`Quantity <quantity>`. For reading or writing large
-data tables in a generic format such as CSV, using the :ref:`Table - Pandas
-interface <pandas>` is an option to consider.
-
-.. note::
-
-    It is strongly encouraged to use the functionality from
-    :mod:`astropy.io.ascii` through a higher level interface in the
-    :ref:`Data Tables <astropy-table>` package. See :ref:`table_io` for more details.
+<astropy-time>`, and :ref:`Quantity <quantity>`.
 
 Getting Started
 ===============
@@ -48,7 +51,7 @@ Getting Started
 Reading Tables
 --------------
 
-The majority of commonly encountered ASCII tables can be read with the
+The majority of commonly encountered text tables can be read with the
 |read| function. Assume you have a file named ``sources.dat`` with the
 following contents::
 
@@ -56,28 +59,52 @@ following contents::
   3102  0.32      4167  4085   Q1250+568-A
   877   0.22      4378  3892   "Source 82"
 
-This table can be read with the following::
+.. testsetup::
+    >>> from pathlib import Path
+    >>> from tempfile import TemporaryDirectory
+    >>> tempdir = TemporaryDirectory()
+    >>> datadir = Path(tempdir.name)
+    >>> (datadir / "sources.dat").write_text(
+    ...     "obsid redshift  X      Y     object\n"
+    ...     "3102  0.32      4167  4085   Q1250+568-A\n"
+    ...     "877   0.22      4378  3892   \"Source 82\"\n"
+    ... )
+    118
+
+This table can be read with the following (assuming that the path to the data directory
+is set like this: ``datadir=Path('path/to/my/data')``)::
 
   >>> from astropy.io import ascii
-  >>> data = ascii.read("sources.dat")  # doctest: +SKIP
-  >>> print(data)                       # doctest: +SKIP
+  >>> data = ascii.read(datadir / "sources.dat")
+  >>> print(data)
   obsid redshift  X    Y      object
   ----- -------- ---- ---- -----------
    3102     0.32 4167 4085 Q1250+568-A
     877     0.22 4378 3892   Source 82
+
+.. testcleanup::
+
+    >>> tempdir.cleanup()
 
 The first argument to the |read| function can be the name of a file, a string
 representation of a table, or a list of table lines. The return value
 (``data`` in this case) is a :ref:`Table <astropy-table>` object.
 
 By default, |read| will try to :ref:`guess the table format <guess_formats>`
-by trying all of the `supported formats`_.
+by trying most of the `supported formats`_.
 
 .. Warning::
 
-   Guessing the file format is often slow for large files because the reader
-   tries parsing the file with every allowed format until one succeeds.
-   For large files it is recommended to disable guessing with ``guess=False``.
+   Guessing the file format might be convenient, but has two disadvantages:
+
+   - It is often slow for large files because the reader
+     tries parsing the file with every allowed format until one succeeds.
+   - Tables sometimes match multiple formats and the first one that succeeds
+     might not be the one you expected
+     (:ref:`example <io_ascii_should_specify_format>`).
+
+   Thus, it is recommended to disable guessing with ``guess=False`` and
+   explicitly give the table format (e.g. ``format='csv'``) whenever possible.
 
 If guessing the format does not work, as in the case for unusually formatted
 tables, you may need to give `astropy.io.ascii` additional hints about
@@ -106,16 +133,16 @@ the table with the code below. This also illustrates using the preferred
 Writing Tables
 --------------
 
-The |write| function provides a way to write a data table as a formatted ASCII
+The |write| function provides a way to write a data table as a formatted text
 table.  Most of the input table :ref:`supported_formats` for reading are also
 available for writing. This provides a great deal of flexibility in the format
 for writing.
 
 ..
   EXAMPLE START
-  Writing Data Tables as Formatted ASCII Tables
+  Writing Data Tables as Formatted Text Tables
 
-The following shows how to write a formatted ASCII table using the |write|
+The following shows how to write a formatted text table using the |write|
 function::
 
   >>> import numpy as np
@@ -142,7 +169,7 @@ example::
 
 .. attention:: **ECSV is recommended**
 
-   For a reproducible ASCII version of your table, we recommend using the
+   For a reproducible text version of your table, we recommend using the
    :ref:`ecsv_format`. This stores all the table meta-data (in particular the
    column types and units) to a comment section at the beginning while
    maintaining compatibility with most plain CSV readers. It also allows storing
@@ -177,7 +204,7 @@ Supported Formats
 =================
 
 A full list of the supported ``format`` values and corresponding format types
-for ASCII tables is given below. The ``Write`` column indicates which formats
+for text tables is given below. The ``Write`` column indicates which formats
 support write functionality, and the ``Fast`` column indicates which formats
 are compatible with the fast Cython/C engine for reading and writing.
 
@@ -197,6 +224,7 @@ are compatible with the fast Cython/C engine for reading and writing.
 ``html``                    Yes      :class:`~astropy.io.ascii.HTML`: HTML format table
 ``ipac``                    Yes      :class:`~astropy.io.ascii.Ipac`: IPAC format table
 ``latex``                   Yes      :class:`~astropy.io.ascii.Latex`: LaTeX table
+``mesa``                    No       :class:`~astropy.io.ascii.Mesa`: MESA stellar evolution code format
 ``mrt``                     Yes      :class:`~astropy.io.ascii.Mrt`: AAS Machine-Readable Table format
 ``no_header``               Yes  Yes :class:`~astropy.io.ascii.NoHeader`: Basic table with no headers
 ``qdp``                     Yes      :class:`~astropy.io.ascii.QDP`: Quick and Dandy Plotter files
@@ -204,8 +232,22 @@ are compatible with the fast Cython/C engine for reading and writing.
 ``rst``                     Yes      :class:`~astropy.io.ascii.RST`: reStructuredText simple format table
 ``sextractor``                       :class:`~astropy.io.ascii.SExtractor`: SExtractor format table
 ``tab``                     Yes  Yes :class:`~astropy.io.ascii.Tab`: Basic table with tab-separated values
+``tdat``                    Yes      :class:`~astropy.io.ascii.Tdat`: Transportable Database Aggregate Table format
 ========================= ===== ==== ============================================================================================
 
+Getting Help
+============
+
+Some formats have additional options that can be set to control the behavior of the
+reader or writer. For more information on these options, you can either see the
+documentation for the specific format class (e.g. :class:`~astropy.io.ascii.HTML`) or
+use the ``help`` function of the ``read`` or ``write`` functions. For example:
+
+.. doctest-skip::
+
+  >>> ascii.read.help()  # Common help for all formats
+  >>> ascii.read.help("html")  # Common help plus "html" format-specific args
+  >>> ascii.write.help("latex")  # Common help plus "latex" format-specific args
 
 Using `astropy.io.ascii`
 ========================

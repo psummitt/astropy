@@ -80,19 +80,19 @@ from .util import (
 )
 
 __all__ = [
-    "getheader",
-    "getdata",
-    "getval",
-    "setval",
-    "delval",
-    "writeto",
     "append",
-    "update",
+    "delval",
+    "getdata",
+    "getheader",
+    "getval",
     "info",
+    "printdiff",
+    "setval",
+    "table_to_hdu",
     "tabledump",
     "tableload",
-    "table_to_hdu",
-    "printdiff",
+    "update",
+    "writeto",
 ]
 
 
@@ -251,7 +251,9 @@ def getdata(filename, *args, header=None, lower=None, upper=None, view=None, **k
         if data.dtype.descr[0][0] == "":
             # this data does not have fields
             return
-        data.dtype.names = [trans(n) for n in data.dtype.names]
+
+        for n in data.dtype.names:
+            data.columns.change_name(n, trans(n))
 
     # allow different views into the underlying ndarray.  Keep the original
     # view just in case there is a problem
@@ -453,10 +455,10 @@ def writeto(
 
     Notes
     -----
-    gzip, zip and bzip2 compression algorithms are natively supported.
+    gzip, zip, bzip2 and lzma compression algorithms are natively supported.
     Compression mode is determined from the filename extension
-    ('.gz', '.zip' or '.bz2' respectively).  It is also possible to pass a
-    compressed file object, e.g. `gzip.GzipFile`.
+    ('.gz', '.zip', '.bz2' or '.xz' respectively).  It is also possible to pass
+    a compressed file object, e.g. `gzip.GzipFile`.
     """
     hdu = _makehdu(data, header)
     if hdu.is_image and not isinstance(hdu, PrimaryHDU):
@@ -466,7 +468,7 @@ def writeto(
     )
 
 
-def table_to_hdu(table, character_as_bytes=False):
+def table_to_hdu(table, character_as_bytes=False, name=None):
     """
     Convert an `~astropy.table.Table` object to a FITS
     `~astropy.io.fits.BinTableHDU`.
@@ -479,6 +481,8 @@ def table_to_hdu(table, character_as_bytes=False):
         Whether to return bytes for string columns when accessed from the HDU.
         By default this is `False` and (unicode) strings are returned, but for
         large tables this may use up a lot of memory.
+    name : str
+        Name to be populated in ``EXTNAME`` keyword.
 
     Returns
     -------
@@ -551,7 +555,7 @@ def table_to_hdu(table, character_as_bytes=False):
             # Be careful that we do not set null for columns that were not masked!
             int_formats = ("B", "I", "J", "K")
             if (
-                col.format in int_formats or col.format.p_format in int_formats
+                col.format.format in int_formats or col.format.p_format in int_formats
             ) and hasattr(table[col.name], "mask"):
                 fill_value = tarray[col.name].fill_value
                 col.null = fill_value.astype(int)
@@ -559,6 +563,9 @@ def table_to_hdu(table, character_as_bytes=False):
         table_hdu = BinTableHDU.from_columns(
             tarray, header=hdr, character_as_bytes=character_as_bytes
         )
+
+    if name is not None:
+        table_hdu.name = name
 
     # Set units and format display for output HDU
     for col in table_hdu.columns:

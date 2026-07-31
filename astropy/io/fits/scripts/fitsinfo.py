@@ -48,7 +48,7 @@ def fitsinfo(filename):
     """
     try:
         fits.info(filename)
-    except OSError as e:
+    except Exception as e:
         log.error(str(e))
 
 
@@ -57,6 +57,9 @@ def main(args=None):
     parser = argparse.ArgumentParser(
         description=DESCRIPTION, formatter_class=argparse.RawDescriptionHelpFormatter
     )
+    # TODO: pass suggest_on_error as kwarg when PYTHON_LT_14 is dropped
+    parser.suggest_on_error = True
+
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )

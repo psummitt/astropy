@@ -3,16 +3,16 @@
 import itertools
 import warnings
 import weakref
-from collections import OrderedDict
 from copy import deepcopy
 
 import numpy as np
 from numpy import ma
 
 from astropy.units import Quantity, StructuredUnit, Unit
-from astropy.utils.compat import COPY_IF_NEEDED, NUMPY_LT_2_0
+from astropy.utils.compat import NUMPY_LT_2_5
 from astropy.utils.console import color_print
 from astropy.utils.data_info import BaseColumnInfo, dtype_info_name
+from astropy.utils.exceptions import AstropyDeprecationWarning
 from astropy.utils.metadata import MetaData
 from astropy.utils.misc import dtype_bytes_or_chars
 
@@ -162,6 +162,26 @@ def _expand_string_array_for_values(arr, values):
     return arr
 
 
+def _contains_ma_masked(
+    values: list, ndim: int, np_ma_masked: np.ma.core.MaskedConstant
+) -> bool:
+    """Look for np.ma.masked in the regular N-d nested sequence.
+
+    This does not create a copy of `data`.
+    """
+    match ndim:
+        case int(neg) if neg < 0:
+            raise AssertionError
+        case 0:
+            return values is np_ma_masked
+        case 1:
+            return any(value is np_ma_masked for value in values)
+        case _:
+            return any(
+                _contains_ma_masked(value, ndim - 1, np_ma_masked) for value in values
+            )
+
+
 def _convert_sequence_data_to_array(data, dtype=None):
     """Convert N-d sequence-like data to ndarray or MaskedArray.
 
@@ -195,15 +215,11 @@ def _convert_sequence_data_to_array(data, dtype=None):
     """
     np_ma_masked = np.ma.masked  # Avoid repeated lookups of this object
 
+    has_len_gt0 = hasattr(data, "__len__") and len(data) > 0
     # Special case of an homogeneous list of MaskedArray elements (see #8977).
     # np.ma.masked is an instance of MaskedArray, so exclude those values.
-    if (
-        hasattr(data, "__len__")
-        and len(data) > 0
-        and all(
-            isinstance(val, np.ma.MaskedArray) and val is not np_ma_masked
-            for val in data
-        )
+    if has_len_gt0 and all(
+        isinstance(val, np.ma.MaskedArray) and val is not np_ma_masked for val in data
     ):
         np_data = np.ma.array(data, dtype=dtype)
         return np_data
@@ -223,21 +239,19 @@ def _convert_sequence_data_to_array(data, dtype=None):
             category=FutureWarning,
             message=".*Promotion of numbers and bools to strings.*",
         )
+
+        has_unit = has_len_gt0 and any(hasattr(v, "unit") for v in data)
+
         try:
-            np_data = np.array(data, dtype=dtype)
+            cls = Quantity if has_unit else np.array
+            np_data = cls(data, dtype=dtype)
         except np.ma.MaskError:
             # Catches case of dtype=int with masked values, instead let it
             # convert to float
             np_data = np.array(data)
         except Exception:
-            # Conversion failed for some reason, e.g. [2, 1*u.m] gives TypeError in Quantity.
-            # First try to interpret the data as Quantity. If that still fails then fall
-            # through to object
-            try:
-                np_data = Quantity(data, dtype)
-            except Exception:
-                dtype = object
-                np_data = np.array(data, dtype=dtype)
+            dtype = object
+            np_data = np.array(data, dtype=dtype)
 
     if np_data.ndim == 0 or (np_data.ndim > 0 and len(np_data) == 0):
         # Implies input was a scalar or an empty list (e.g. initializing an
@@ -254,22 +268,9 @@ def _convert_sequence_data_to_array(data, dtype=None):
 
     # Now we need to determine if there is an np.ma.masked anywhere in input data.
 
-    # Make a statement like below to look for np.ma.masked in a nested sequence.
-    # Because np.array(data) succeeded we know that `data` has a regular N-d
-    # structure. Find ma_masked:
-    #   any(any(any(d2 is ma_masked for d2 in d1) for d1 in d0) for d0 in data)
-    # Using this eval avoids creating a copy of `data` in the more-usual case of
-    # no masked elements.
-    any_statement = "d0 is ma_masked"
-    for ii in reversed(range(np_data.ndim)):
-        if ii == 0:
-            any_statement = f"any({any_statement} for d0 in data)"
-        elif ii == np_data.ndim - 1:
-            any_statement = f"any(d{ii} is ma_masked for d{ii} in d{ii-1})"
-        else:
-            any_statement = f"any({any_statement} for d{ii} in d{ii-1})"
-    context = {"ma_masked": np.ma.masked, "data": data}
-    has_masked = eval(any_statement, context)
+    # Look for np.ma.masked in the regular N-d nested sequence without creating
+    # a copy of `data` in the common case where there are no masked elements.
+    has_masked = _contains_ma_masked(data, np_data.ndim, np_ma_masked)
 
     # If there are any masks then explicitly change each one to a fill value and
     # set a mask boolean array. If not has_masked then we're done.
@@ -397,7 +398,7 @@ class ColumnInfo(BaseColumnInfo):
         else:
             units = [None] * len(names)
         for name, part_unit in zip(names, units):
-            part = Column(self._parent[name])
+            part = self._parent.__class__(self._parent[name])
             part.unit = part_unit
             part.description = None
             part.meta = {}
@@ -500,13 +501,15 @@ class ColumnInfo(BaseColumnInfo):
         -------
         arrays : list of ndarray
         """
+        col = self._parent
+        # For a structured array return each of the individual fields in order
+        if col.dtype.names:
+            return [col[name] for name in col.dtype.names]
         return [self._parent]
 
 
 class BaseColumn(_ColumnGetitemShim, np.ndarray):
-    meta = MetaData(default_factory=OrderedDict)
-    # It's important that the metadata is an OrderedDict so that the order of
-    # the metadata is preserved when the column is YAML serialized.
+    meta = MetaData(default_factory=dict)
 
     def __new__(
         cls,
@@ -519,7 +522,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
         unit=None,
         format=None,
         meta=None,
-        copy=COPY_IF_NEEDED,
+        copy=None,
         copy_indices=True,
     ):
         if data is None:
@@ -709,8 +712,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
         if obj is None:
             return
 
-        if callable(super().__array_finalize__):
-            super().__array_finalize__(obj)
+        super().__array_finalize__(obj)
 
         # Self was created from template (e.g. obj[slice] or (obj * 2))
         # or viewcast e.g. obj.view(Column).  In either case we want to
@@ -743,11 +745,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
            we also want to consistently return an array rather than a column
            (see #1446 and #1685)
         """
-        if NUMPY_LT_2_0:
-            out_arr = super().__array_wrap__(out_arr, context)
-            return_scalar = True
-        else:
-            out_arr = super().__array_wrap__(out_arr, context, return_scalar)
+        out_arr = super().__array_wrap__(out_arr, context, return_scalar)
 
         if self.shape != out_arr.shape or (
             isinstance(out_arr, BaseColumn)
@@ -765,9 +763,13 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
         return self._name
 
     @name.setter
-    def name(self, val):
-        if val is not None:
+    def name(self, val: str | None):
+        if isinstance(val, str):
             val = str(val)
+        elif val is not None:
+            raise TypeError(
+                f"Expected a str value, got {val} with type {type(val).__name__}"
+            )
 
         if self.parent_table is not None:
             table = self.parent_table
@@ -855,7 +857,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
 
     def pformat(
         self,
-        max_lines=None,
+        max_lines=-1,
         show_name=True,
         show_unit=False,
         show_dtype=False,
@@ -863,17 +865,19 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
     ):
         """Return a list of formatted string representation of column values.
 
-        If no value of ``max_lines`` is supplied then the height of the
+        If ``max_lines=None`` is supplied then the height of the
         screen terminal is used to set ``max_lines``.  If the terminal
         height cannot be determined then the default will be
         determined using the ``astropy.conf.max_lines`` configuration
         item. If a negative value of ``max_lines`` is supplied then
-        there is no line limit applied.
+        there is no line limit applied (default).
 
         Parameters
         ----------
-        max_lines : int
-            Maximum lines of output (header + data rows)
+        max_lines : int or None
+            Maximum lines of output (header + data rows).
+            -1 (default) implies no limit, ``None`` implies using the
+            height of the current terminal.
 
         show_name : bool
             Include column name. Default is True.
@@ -907,7 +911,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
     def pprint(self, max_lines=None, show_name=True, show_unit=False, show_dtype=False):
         """Print a formatted string representation of column values.
 
-        If no value of ``max_lines`` is supplied then the height of the
+        If ``max_lines=None`` (default) then the height of the
         screen terminal is used to set ``max_lines``.  If the terminal
         height cannot be determined then the default will be
         determined using the ``astropy.conf.max_lines`` configuration
@@ -1006,7 +1010,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
         if a.dtype.kind == "S" and not isinstance(v, bytes):
             v = np.asarray(v)
             if v.dtype.kind == "U":
-                v = np.char.encode(v, "utf-8")
+                v = np.strings.encode(v, "utf-8")
         return np.searchsorted(a, v, side=side, sorter=sorter)
 
     searchsorted.__doc__ = np.ndarray.searchsorted.__doc__
@@ -1148,7 +1152,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
         else:
             arr = np.asarray(value)
             if arr.dtype.char == "U":
-                arr = np.char.encode(arr, encoding="utf-8")
+                arr = np.strings.encode(arr, encoding="utf-8")
                 if isinstance(value, np.ma.MaskedArray):
                     arr = np.ma.array(arr, mask=value.mask, copy=False)
                 value = arr
@@ -1157,7 +1161,7 @@ class BaseColumn(_ColumnGetitemShim, np.ndarray):
 
     def tolist(self):
         if self.dtype.kind == "S":
-            return np.char.chararray.decode(self, encoding="utf-8").tolist()
+            return np.strings.decode(self, encoding="utf-8").tolist()
         else:
             return super().tolist()
 
@@ -1244,7 +1248,7 @@ class Column(BaseColumn):
         unit=None,
         format=None,
         meta=None,
-        copy=COPY_IF_NEEDED,
+        copy=None,
         copy_indices=True,
     ):
         if isinstance(data, MaskedColumn) and np.any(data.mask):
@@ -1273,7 +1277,19 @@ class Column(BaseColumn):
             raise AttributeError(
                 "cannot set mask value to a column in non-masked Table"
             )
-        super().__setattr__(item, value)
+        if not NUMPY_LT_2_5 and item == "dtype":
+            warnings.warn(
+                "Setting the Column dtype attribute is deprecated since astropy 8.0.0 "
+                "and it will stop working in a future version. "
+                "As an alternative, you can create a view with a new dtype via "
+                "column.view(dtype=new_dtype). This follows a similar "
+                "deprecation in numpy 2.5.0.",
+                AstropyDeprecationWarning,
+                stacklevel=2,
+            )
+            self._set_dtype(value)
+        else:
+            super().__setattr__(item, value)
 
         if item == "unit" and issubclass(self.dtype.type, np.number):
             try:
@@ -1603,7 +1619,7 @@ class MaskedColumn(Column, _MaskedColumnGetitemShim, ma.MaskedArray):
         unit=None,
         format=None,
         meta=None,
-        copy=COPY_IF_NEEDED,
+        copy=None,
         copy_indices=True,
     ):
         if mask is None:
@@ -1671,6 +1687,23 @@ class MaskedColumn(Column, _MaskedColumnGetitemShim, ma.MaskedArray):
             index.replace_col(self_data, self)
 
         return self
+
+    def __deepcopy__(self, memo=None):
+        out = super().__deepcopy__(memo)
+
+        # MaskedArray.__deepcopy__ copies self.__dict__ entries directly via
+        # deepcopy(), bypassing the DataInfo descriptor.  That leaves a raw
+        # deep-copied MaskedColumnInfo in out.__dict__["info"] which has
+        # _attrs (e.g. serialize_method) but lacks bound-only slot state such
+        # as _format_funcs.  Re-assigning through the descriptor (DataInfo.__set__)
+        # creates a fresh bound MaskedColumnInfo, copies across the _attrs from
+        # the raw object, and sets _format_funcs = {} as expected.
+        #
+        # See https://github.com/astropy/astropy/pull/19466 for more details.
+        if "info" in out.__dict__:
+            out.info = self.info
+
+        return out
 
     @property
     def fill_value(self):

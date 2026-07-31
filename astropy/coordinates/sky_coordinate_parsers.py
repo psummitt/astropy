@@ -7,7 +7,6 @@ import numpy as np
 
 from astropy import units as u
 from astropy.units import IrreducibleUnit, Unit
-from astropy.utils.compat import COPY_IF_NEEDED
 
 from .baseframe import (
     BaseCoordinateFrame,
@@ -15,6 +14,7 @@ from .baseframe import (
     _get_repr_cls,
     frame_transform_graph,
 )
+from .builtin_frames import ICRS
 from .representation import (
     BaseRepresentation,
     SphericalRepresentation,
@@ -177,8 +177,6 @@ def _get_frame_without_data(args, kwargs):
                     )
 
     if frame_cls is None:
-        from .builtin_frames import ICRS
-
         frame_cls = ICRS
 
     # By now, frame_cls should be set - if it's not, something went wrong
@@ -398,7 +396,7 @@ def _parse_coordinate_arg(coords, frame, units):
                 if (
                     reprname == "d_distance"
                     and not hasattr(orig_vel, reprname)
-                    and "unit" in orig_vel.get_name()
+                    and "unit" in orig_vel.name
                 ):
                     continue
                 values.append(getattr(vel, reprname))
@@ -507,7 +505,7 @@ def _parse_coordinate_arg(coords, frame, units):
             if n_coords > n_attr_names:
                 raise ValueError(
                     f"Input coordinates have {n_coords} values but representation"
-                    f" {frame.representation_type.get_name()} only accepts"
+                    f" {frame.representation_type.name} only accepts"
                     f" {n_attr_names}"
                 )
 
@@ -529,9 +527,7 @@ def _parse_coordinate_arg(coords, frame, units):
         for frame_attr_name, repr_attr_class, value, unit in zip(
             frame_attr_names, repr_attr_classes, values, units
         ):
-            components[frame_attr_name] = repr_attr_class(
-                value, unit=unit, copy=COPY_IF_NEEDED
-            )
+            components[frame_attr_name] = repr_attr_class(value, unit=unit, copy=None)
     except Exception as err:
         raise ValueError(
             f'Cannot parse first argument data "{value}" for attribute'

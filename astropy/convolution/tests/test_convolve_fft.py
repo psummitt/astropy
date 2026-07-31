@@ -1,6 +1,5 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
-import itertools
 from contextlib import nullcontext
 
 import numpy as np
@@ -13,15 +12,16 @@ from numpy.testing import (
 
 from astropy import units as u
 from astropy.convolution.convolve import convolve, convolve_fft
+from astropy.convolution.tests.test_convolve import MASKED_KERNEL_ERRORMESSAGE
 from astropy.utils.exceptions import AstropyUserWarning
 
 VALID_DTYPES = (">f4", "<f4", ">f8", "<f8")
-VALID_DTYPE_MATRIX = list(itertools.product(VALID_DTYPES, VALID_DTYPES))
 
 BOUNDARY_OPTIONS = [None, "fill", "wrap"]
 NANTREATMENT_OPTIONS = ("interpolate", "fill")
 NORMALIZE_OPTIONS = [True, False]
 PRESERVE_NAN_OPTIONS = [True, False]
+
 
 """
 What does convolution mean?  We use the 'same size' assumption here (i.e.,
@@ -35,23 +35,6 @@ Convolved with [0, 1] = [0, 1, 2, 3, 4]
 """
 
 # NOTE: use_numpy_fft is redundant if you don't have FFTW installed
-option_names = ("boundary", "nan_treatment", "normalize_kernel", "dealias")
-options = list(
-    itertools.product(
-        BOUNDARY_OPTIONS, NANTREATMENT_OPTIONS, (True, False), (True, False)
-    )
-)
-option_names_preserve_nan = (
-    "boundary",
-    "nan_treatment",
-    "normalize_kernel",
-    "preserve_nan",
-)
-options_preserve_nan = list(
-    itertools.product(
-        BOUNDARY_OPTIONS, NANTREATMENT_OPTIONS, (True, False), (True, False)
-    )
-)
 
 
 def expected_boundary_warning(boundary=None):
@@ -84,17 +67,21 @@ def expected_dealias_error(boundary=None, dealias=False):
 def assert_floatclose(x, y):
     """Assert arrays are close to within expected floating point rounding.
 
-    Check that the result is correct at the precision expected for 64 bit
+    Check that the result is correct at the precision expected for 64-bit
     numbers, taking account that the tolerance has to reflect that all powers
     in the FFTs enter our values.
     """
     # The number used is set by the fact that the Windows FFT sometimes
     # returns an answer that is EXACTLY 10*np.spacing.
+    __tracebackhide__ = True
     assert_allclose(x, y, atol=10 * np.spacing(x.max()), rtol=0.0)
 
 
 class TestConvolve1D:
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_quantity(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that convolve_fft works correctly when input array is a Quantity
@@ -116,7 +103,10 @@ class TestConvolve1D:
 
                 assert x.unit == z.unit
 
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_unity_1_none(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that a unit kernel with a single element returns the same array
@@ -139,7 +129,10 @@ class TestConvolve1D:
 
                 assert_floatclose(z, x)
 
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_unity_3(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that a unit kernel with three elements returns the same array
@@ -163,7 +156,10 @@ class TestConvolve1D:
 
                 assert_floatclose(z, x)
 
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_uniform_3(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that the different modes are producing the correct results using
@@ -213,7 +209,10 @@ class TestConvolve1D:
 
                 assert_floatclose(z, result_dict[answer_key])
 
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_halfity_3(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that the different modes are producing the correct results using
@@ -261,7 +260,10 @@ class TestConvolve1D:
 
                 assert_floatclose(z, answer_dict[answer_key])
 
-    @pytest.mark.parametrize(option_names_preserve_nan, options_preserve_nan)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("preserve_nan", PRESERVE_NAN_OPTIONS)
     def test_unity_3_withnan(
         self, boundary, nan_treatment, normalize_kernel, preserve_nan
     ):
@@ -300,20 +302,13 @@ class TestConvolve1D:
         np.array([1.0, 0.0, 3.0], dtype="float64"),
         np.array([1.0, 0.0, 3.0], dtype="float64"),
     )
-    options_unity1withnan = list(
-        itertools.product(
-            BOUNDARY_OPTIONS,
-            NANTREATMENT_OPTIONS,
-            (True, False),
-            (True, False),
-            inputs,
-            outputs,
-        )
-    )
 
-    @pytest.mark.parametrize(
-        option_names_preserve_nan + ("inval", "outval"), options_unity1withnan
-    )
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("preserve_nan", PRESERVE_NAN_OPTIONS)
+    @pytest.mark.parametrize("inval", inputs)
+    @pytest.mark.parametrize("outval", outputs)
     def test_unity_1_withnan(
         self, boundary, nan_treatment, normalize_kernel, preserve_nan, inval, outval
     ):
@@ -344,7 +339,10 @@ class TestConvolve1D:
 
         assert_floatclose(z, outval)
 
-    @pytest.mark.parametrize(option_names_preserve_nan, options_preserve_nan)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("preserve_nan", PRESERVE_NAN_OPTIONS)
     def test_uniform_3_withnan(
         self, boundary, nan_treatment, normalize_kernel, preserve_nan
     ):
@@ -487,12 +485,23 @@ class TestConvolve1D:
         array = np.array([1.0, 2.0, 3.0], dtype="float64")
         kernel = np.array([1, 1, 1])
         masked_kernel = np.ma.masked_array(kernel, mask=[0, 1, 0])
-        result = convolve_fft(array, masked_kernel, boundary="fill", fill_value=0.0)
+        with pytest.raises(ValueError, match=MASKED_KERNEL_ERRORMESSAGE):
+            result = convolve_fft(array, masked_kernel, boundary="fill", fill_value=0.0)
+
+        filled_masked_kernel = masked_kernel.filled(0.0)
+        result = convolve_fft(
+            array, filled_masked_kernel, boundary="fill", fill_value=0.0
+        )
         assert_floatclose(result, [1, 2, 1])
 
-        # Now test against convolve()
+        with pytest.raises(ValueError, match=MASKED_KERNEL_ERRORMESSAGE):
+            # Now test against convolve()
+            convolve_result = convolve(
+                array, masked_kernel, boundary="fill", fill_value=0.0
+            )
+
         convolve_result = convolve(
-            array, masked_kernel, boundary="fill", fill_value=0.0
+            array, filled_masked_kernel, boundary="fill", fill_value=0.0
         )
         assert_floatclose(convolve_result, result)
 
@@ -505,7 +514,10 @@ class TestConvolve1D:
         result = convolve_fft(array, kernel, normalize_kernel=np.max)
         assert_floatclose(result, [3, 6, 5])
 
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_normalization_is_respected(
         self, boundary, nan_treatment, normalize_kernel, dealias
     ):
@@ -541,7 +553,10 @@ class TestConvolve1D:
 
 
 class TestConvolve2D:
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_unity_1x1_none(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that a 1x1 unit kernel returns the same array
@@ -566,7 +581,10 @@ class TestConvolve2D:
 
                 assert_floatclose(z, x)
 
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_unity_3x3(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that a 3x3 unit kernel returns the same array (except when
@@ -594,7 +612,10 @@ class TestConvolve2D:
 
                 assert_floatclose(z, x)
 
-    @pytest.mark.parametrize(option_names, options)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("dealias", [True, False])
     def test_uniform_3x3(self, boundary, nan_treatment, normalize_kernel, dealias):
         """
         Test that the different modes are producing the correct results using
@@ -652,7 +673,10 @@ class TestConvolve2D:
                 a = answer_dict[answer_key]
                 assert_floatclose(z, a)
 
-    @pytest.mark.parametrize(option_names_preserve_nan, options_preserve_nan)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("preserve_nan", PRESERVE_NAN_OPTIONS)
     def test_unity_3x3_withnan(
         self, boundary, nan_treatment, normalize_kernel, preserve_nan
     ):
@@ -688,7 +712,10 @@ class TestConvolve2D:
 
         assert_floatclose(z, x)
 
-    @pytest.mark.parametrize(option_names_preserve_nan, options_preserve_nan)
+    @pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+    @pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+    @pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+    @pytest.mark.parametrize("preserve_nan", PRESERVE_NAN_OPTIONS)
     def test_uniform_3x3_withnan(
         self, boundary, nan_treatment, normalize_kernel, preserve_nan
     ):
@@ -882,16 +909,11 @@ def test_asymmetric_kernel(boundary):
         assert_array_almost_equal_nulp(z, np.array([9.0, 10.0, 5.0], dtype="float"), 10)
 
 
-@pytest.mark.parametrize(
-    ("boundary", "nan_treatment", "normalize_kernel", "preserve_nan", "dtype"),
-    itertools.product(
-        BOUNDARY_OPTIONS,
-        NANTREATMENT_OPTIONS,
-        NORMALIZE_OPTIONS,
-        PRESERVE_NAN_OPTIONS,
-        VALID_DTYPES,
-    ),
-)
+@pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+@pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+@pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+@pytest.mark.parametrize("preserve_nan", PRESERVE_NAN_OPTIONS)
+@pytest.mark.parametrize("dtype", VALID_DTYPES)
 def test_input_unmodified(
     boundary, nan_treatment, normalize_kernel, preserve_nan, dtype
 ):
@@ -922,16 +944,11 @@ def test_input_unmodified(
     assert np.all(np.array(kernel, dtype=dtype) == y)
 
 
-@pytest.mark.parametrize(
-    ("boundary", "nan_treatment", "normalize_kernel", "preserve_nan", "dtype"),
-    itertools.product(
-        BOUNDARY_OPTIONS,
-        NANTREATMENT_OPTIONS,
-        NORMALIZE_OPTIONS,
-        PRESERVE_NAN_OPTIONS,
-        VALID_DTYPES,
-    ),
-)
+@pytest.mark.parametrize("boundary", BOUNDARY_OPTIONS)
+@pytest.mark.parametrize("nan_treatment", NANTREATMENT_OPTIONS)
+@pytest.mark.parametrize("normalize_kernel", NORMALIZE_OPTIONS)
+@pytest.mark.parametrize("preserve_nan", PRESERVE_NAN_OPTIONS)
+@pytest.mark.parametrize("dtype", VALID_DTYPES)
 def test_input_unmodified_with_nan(
     boundary, nan_treatment, normalize_kernel, preserve_nan, dtype
 ):
@@ -995,3 +1012,67 @@ def test_convolve_fft_boundary_extend_error():
         match=r"The 'extend' option is not implemented for fft-based convolution",
     ):
         convolve_fft(x, y, boundary="extend")
+
+
+def test_convolve_fft_masked_kernel_raises():
+    """
+    Test that convolve_fft raises ValueError when passed a masked kernel
+    with actual masked values.
+
+    This addresses issue #7543 - masked kernels should not be silently
+    filled, as it can lead to unexpected behavior.
+    """
+    # Test with 1D masked kernel with masked values
+    array = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    masked_kernel = np.ma.array([1, 1, 1], mask=[0, 1, 0])
+
+    with pytest.raises(ValueError, match=MASKED_KERNEL_ERRORMESSAGE):
+        convolve_fft(array, masked_kernel, boundary="fill")
+
+    # Test with 2D masked kernel with masked values
+    array_2d = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+    masked_kernel_2d = np.ma.array(
+        [[1, 1, 1], [1, 1, 1], [1, 1, 1]], mask=[[0, 0, 0], [0, 1, 0], [0, 0, 0]]
+    )
+
+    with pytest.raises(ValueError, match=MASKED_KERNEL_ERRORMESSAGE):
+        convolve_fft(array_2d, masked_kernel_2d, boundary="fill")
+
+    # Test with all values masked
+    all_masked_kernel = np.ma.array([1, 1, 1], mask=[1, 1, 1])
+
+    with pytest.raises(ValueError, match=MASKED_KERNEL_ERRORMESSAGE):
+        convolve_fft(array, all_masked_kernel, boundary="fill")
+
+
+def test_convolve_fft_unmasked_masked_array_kernel():
+    """
+    Test that convolve_fft works correctly when passed a masked array kernel
+    with no actual masked values (i.e., all mask values are False).
+
+    This should work without raising an error since there are no masked values.
+    """
+    array = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
+    # Masked array with no actual masked values
+    unmasked_kernel = np.ma.array([1, 2, 1], mask=[0, 0, 0])
+
+    # This should work without error
+    result = convolve_fft(
+        array, unmasked_kernel, boundary="fill", normalize_kernel=True
+    )
+
+    # Verify result is reasonable (not testing exact values, just that it runs)
+    assert result.shape == array.shape
+    assert not np.any(np.isnan(result))
+
+    # Test with 2D as well
+    array_2d = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]])
+    unmasked_kernel_2d = np.ma.array(
+        [[0, 1, 0], [1, 1, 1], [0, 1, 0]], mask=[[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+    )
+
+    result_2d = convolve_fft(
+        array_2d, unmasked_kernel_2d, boundary="fill", normalize_kernel=True
+    )
+    assert result_2d.shape == array_2d.shape
+    assert not np.any(np.isnan(result_2d))

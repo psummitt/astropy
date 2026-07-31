@@ -26,66 +26,24 @@ try:
 except ImportError:
     _CAN_RESIZE_TERMINAL = False
 
-from astropy import conf
+import numpy as np
 
-from .decorators import classproperty, deprecated
-from .misc import isiterable
+from astropy import conf
+from astropy.utils.compat.optional_deps import HAS_IPYKERNEL, HAS_IPYWIDGETS
+
+from .decorators import deprecated
 
 __all__ = [
-    "isatty",
-    "color_print",
-    "human_time",
-    "human_file_size",
     "ProgressBar",
-    "Spinner",
-    "print_code_line",
     "ProgressBarOrSpinner",
+    "Spinner",
+    "color_print",
+    "human_file_size",
+    "human_time",
+    "isatty",
+    "print_code_line",
     "terminal_size",
 ]
-
-
-class _IPython:
-    """Singleton class given access to IPython streams, etc."""
-
-    @classproperty
-    def get_ipython(cls):
-        try:
-            from IPython import get_ipython
-        except ImportError:
-            pass
-        return get_ipython
-
-    @classproperty
-    def OutStream(cls):
-        if not hasattr(cls, "_OutStream"):
-            cls._OutStream = None
-            try:
-                cls.get_ipython()
-            except NameError:
-                return None
-
-            try:
-                from ipykernel.iostream import OutStream
-            except ImportError:
-                try:
-                    from IPython.zmq.iostream import OutStream
-                except ImportError:
-                    return None
-
-            cls._OutStream = OutStream
-
-        return cls._OutStream
-
-    @classproperty
-    def ipyio(cls):
-        if not hasattr(cls, "_ipyio"):
-            try:
-                from IPython.utils import io
-            except ImportError:
-                cls._ipyio = None
-            else:
-                cls._ipyio = io
-        return cls._ipyio
 
 
 def isatty(file):
@@ -102,32 +60,7 @@ def isatty(file):
     ):
         return False
 
-    if hasattr(file, "isatty"):
-        return file.isatty()
-
-    if _IPython.OutStream is None or (not isinstance(file, _IPython.OutStream)):
-        return False
-
-    # File is an IPython OutStream. Check whether:
-    # - File name is 'stdout'; or
-    # - File wraps a Console
-    if getattr(file, "name", None) == "stdout":
-        return True
-
-    if hasattr(file, "stream"):
-        # FIXME: pyreadline has no had new release since 2015, drop it when
-        #        IPython minversion is 5.x.
-        # On Windows, in IPython 2 the standard I/O streams will wrap
-        # pyreadline.Console objects if pyreadline is available; this should
-        # be considered a TTY.
-        try:
-            from pyreadline.console import Console as PyreadlineConsole
-        except ImportError:
-            return False
-
-        return isinstance(file.stream, PyreadlineConsole)
-
-    return False
+    return hasattr(file, "isatty") and file.isatty()
 
 
 @deprecated("6.1", alternative="shutil.get_terminal_size")
@@ -210,7 +143,7 @@ def _color_text(text, color):
         "white": "1;37",
     }
 
-    if sys.platform == "win32" and _IPython.OutStream is None:
+    if sys.platform == "win32" and not HAS_IPYKERNEL:
         # On Windows do not colorize text unless in IPython
         return text
 
@@ -393,7 +326,7 @@ def human_file_size(size):
     if size == 0:
         num_scale = 0
     else:
-        num_scale = int(math.floor(math.log(size) / math.log(1000)))
+        num_scale = math.floor(math.log(size) / math.log(1000))
     if num_scale > 7:
         suffix = "?"
     else:
@@ -467,7 +400,7 @@ class ProgressBar:
         else:
             self._silent = False
 
-        if isiterable(total_or_items):
+        if np.iterable(total_or_items):
             self._items = iter(total_or_items)
             self._total = len(total_or_items)
         else:
@@ -586,9 +519,12 @@ class ProgressBar:
         """
         # Create and display an empty progress bar widget,
         # if none exists.
+
         if not hasattr(self, "_widget"):
             # Import only if an IPython widget, i.e., widget in iPython NB
-            _IPython.get_ipython()
+            if not HAS_IPYWIDGETS:
+                raise ModuleNotFoundError("ipywidgets is not installed")
+
             from ipywidgets import widgets
 
             self._widget = widgets.FloatProgress()
@@ -879,7 +815,7 @@ class Spinner:
             flush()
             yield
 
-            for i in range(self._step):
+            for _ in range(self._step):
                 yield
 
             index = (index + 1) % len(chars)

@@ -11,7 +11,6 @@ from astropy.coordinates import (
     CartesianRepresentation,
     DynamicMatrixTransform,
     FunctionTransformWithFiniteDifference,
-    SphericalDifferential,
     SphericalRepresentation,
     TimeAttribute,
     get_sun,
@@ -22,7 +21,7 @@ from astropy.coordinates.builtin_frames.galactic_transforms import (
     _gal_to_fk5,
     fk5_to_gal,
 )
-from astropy.coordinates.sites import get_builtin_sites
+from astropy.coordinates.sites import _GREENWICH
 from astropy.tests.helper import assert_quantity_allclose
 from astropy.time import Time
 
@@ -78,7 +77,7 @@ def test_faux_lsr(dt, symmetric):
     idiff = ic.cartesian.differentials["s"]
     ldiff = lsrc.cartesian.differentials["s"]
     totchange = np.sum((ldiff.d_xyz - idiff.d_xyz) ** 2) ** 0.5
-    assert_quantity_allclose(totchange, np.sum(lsrc.v_bary.d_xyz**2) ** 0.5)
+    assert_quantity_allclose(totchange, np.sum(lsrc.v_bary.xyz**2) ** 0.5)
 
     ic2 = ICRS(
         ra=120.3 * u.deg,
@@ -181,7 +180,7 @@ def test_gcrs_diffs():
 
 def test_altaz_diffs():
     time = Time("J2015") + np.linspace(-1, 1, 1000) * u.day
-    aa = AltAz(obstime=time, location=get_builtin_sites()["greenwich"])
+    aa = AltAz(obstime=time, location=_GREENWICH)
 
     icoo = ICRS(
         np.zeros(time.shape) * u.deg,
@@ -284,35 +283,3 @@ def test_numerical_limits(distance):
     # the direction above with a small allowance for noise - finite-difference
     # rounding errors have ruined the calculation
     assert np.ptp(gcrs_coord.radial_velocity) < 65 * u.km / u.s
-
-
-def diff_info_plot(frame, time):
-    """
-    Useful for plotting a frame with multiple times. *Not* used in the testing
-    suite per se, but extremely useful for interactive plotting of results from
-    tests in this module.
-    """
-    from matplotlib import pyplot as plt
-
-    fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 12))
-    ax1.plot_date(
-        time.plot_date, frame.data.differentials["s"].d_xyz.to(u.km / u.s).T, fmt="-"
-    )
-    ax1.legend(["x", "y", "z"])
-
-    ax2.plot_date(
-        time.plot_date,
-        np.sum(frame.data.differentials["s"].d_xyz.to(u.km / u.s) ** 2, axis=0) ** 0.5,
-        fmt="-",
-    )
-    ax2.set_title("total")
-
-    sd = frame.data.differentials["s"].represent_as(SphericalDifferential, frame.data)
-
-    ax3.plot_date(time.plot_date, sd.d_distance.to(u.km / u.s), fmt="-")
-    ax3.set_title("radial")
-
-    ax4.plot_date(time.plot_date, sd.d_lat.to(u.marcsec / u.yr), fmt="-", label="lat")
-    ax4.plot_date(time.plot_date, sd.d_lon.to(u.marcsec / u.yr), fmt="-", label="lon")
-
-    return fig

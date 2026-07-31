@@ -1,17 +1,14 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
-import os
-import warnings
+from pathlib import Path
 
 from astropy import log
 from astropy.io.fits import getdata
-from astropy.utils.decorators import deprecated_renamed_argument
 from astropy.visualization.mpl_normalize import simple_norm
 
 __all__ = ["fits2bitmap", "main"]
 
 
-@deprecated_renamed_argument(["min_cut", "max_cut"], ["vmin", "vmax"], ["6.1", "6.1"])
 def fits2bitmap(
     filename,
     ext=0,
@@ -33,16 +30,16 @@ def fits2bitmap(
 
     Parameters
     ----------
-    filename : str
+    filename : str | PathLike
         The filename of the FITS file.
     ext : int
         FITS extension name or number of the image to convert. The
         default is 0.
-    out_fn : str
+    out_fn : str | PathLike
         The filename of the output bitmap image. The type of bitmap is
         determined by the filename extension (e.g. '.jpg', '.png'). The
         default is a PNG file with the same name as the FITS file.
-    stretch : {'linear', 'sqrt', 'power', log', 'asinh'}
+    stretch : {'linear', 'sqrt', 'power', 'log', 'asinh'}
         The stretching function to apply to the image. The default is
         'linear'.
     power : float, optional
@@ -83,8 +80,6 @@ def fits2bitmap(
     import matplotlib as mpl
     import matplotlib.image as mimg
 
-    from astropy.utils.introspection import minversion
-
     # __main__ gives ext as a string
     try:
         ext = int(ext)
@@ -100,23 +95,19 @@ def fits2bitmap(
     if image.ndim != 2:
         log.critical(f"data in FITS extension {ext} is not a 2D array")
 
+    filename = Path(filename)
+
     if out_fn is None:
-        out_fn = os.path.splitext(filename)[0]
-        if out_fn.endswith(".fits"):
-            out_fn = os.path.splitext(out_fn)[0]
-        out_fn += ".png"
+        out_fn = filename.with_suffix("")
+        # If the filename ends with .fits.*, remove the * extension.
+        if out_fn.suffix == ".fits":
+            out_fn = out_fn.with_suffix("")
+        out_fn = out_fn.with_suffix(out_fn.suffix + ".png")
+    else:
+        out_fn = Path(out_fn)
+    out_format = out_fn.suffix[1:]
 
-    # explicitly define the output format
-    out_format = os.path.splitext(out_fn)[1][1:]
-
-    try:
-        if minversion(mpl, "3.5"):
-            mpl.colormaps[cmap]
-        else:
-            from matplotlib import cm
-
-            cm.get_cmap(cmap)
-    except (ValueError, KeyError):
+    if cmap not in mpl.colormaps:
         log.critical(f"{cmap} is not a valid matplotlib colormap name.")
         return 1
 
@@ -142,10 +133,9 @@ def main(args=None):
     parser = argparse.ArgumentParser(
         description="Create a bitmap file from a FITS image."
     )
-    # the mutually exclusive groups can be removed when the deprecated
-    # min_cut and max_cut are removed
-    vmin_group = parser.add_mutually_exclusive_group()
-    vmax_group = parser.add_mutually_exclusive_group()
+    # TODO: pass suggest_on_error as kwarg when PYTHON_LT_14 is dropped
+    parser.suggest_on_error = True
+
     parser.add_argument(
         "-e",
         "--ext",
@@ -189,29 +179,17 @@ def main(args=None):
             "(Default is 0.1)."
         ),
     )
-    vmin_group.add_argument(
+    parser.add_argument(
         "--vmin",
         type=float,
         default=None,
         help="The pixel value of the minimum cut level (Default is the image minimum).",
     )
-    vmax_group.add_argument(
+    parser.add_argument(
         "--vmax",
         type=float,
         default=None,
         help="The pixel value of the maximum cut level (Default is the image maximum).",
-    )
-    vmin_group.add_argument(
-        "--min_cut",
-        type=float,
-        default=None,
-        help="The pixel value of the minimum cut level (Deprecated, use vmin instead; default is the image minimum).",
-    )
-    vmax_group.add_argument(
-        "--max_cut",
-        type=float,
-        default=None,
-        help="The pixel value of the maximum cut level (Deprecated, use vmax instead; default is the image maximum).",
     )
     parser.add_argument(
         "--min_percent",
@@ -252,14 +230,6 @@ def main(args=None):
         "filename", nargs="+", help="Path to one or more FITS files to convert"
     )
     args = parser.parse_args(args)
-
-    if args.min_cut is not None:
-        warnings.warn('The "--min_cut" argument is deprecated. Use "--vmin" instead.')
-        args.vmin = args.min_cut
-
-    if args.max_cut is not None:
-        warnings.warn('The "--max_cut" argument is deprecated. Use "--vmax" instead.')
-        args.vmax = args.max_cut
 
     for filename in args.filename:
         fits2bitmap(

@@ -6,6 +6,7 @@ import re
 import textwrap
 import warnings
 from datetime import datetime
+from typing import Final
 from urllib.request import Request, urlopen
 
 # Third-party
@@ -14,7 +15,7 @@ from astropy.utils.console import _color_text, color_print
 
 from .funcs import get_sun
 
-__all__ = []
+__all__: Final[list[str]] = []
 
 
 class HumanError(ValueError):
@@ -218,11 +219,11 @@ def horoscope(birthday, corrected=True, chinese=False):
     for block in textwrap.wrap(desc, 79):
         split_block = block.split()
         for i, word in enumerate(split_block):
-            for re_word in special_words.keys():
+            for re_word, color in special_words.items():
                 match = re.search(re_word, word)
                 if match is None:
                     continue
-                split_block[i] = _color_text(match.groups()[0], special_words[re_word])
+                split_block[i] = _color_text(match.groups()[0], color)
         print(" ".join(split_block))
 
 

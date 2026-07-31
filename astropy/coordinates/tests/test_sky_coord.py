@@ -24,6 +24,7 @@ from astropy.coordinates import (
     Attribute,
     BaseCoordinateFrame,
     CartesianRepresentation,
+    Distance,
     EarthLocation,
     Galactic,
     Latitude,
@@ -43,7 +44,6 @@ from astropy.io import fits
 from astropy.tests.helper import assert_quantity_allclose as assert_allclose
 from astropy.time import Time
 from astropy.units import allclose as quantity_allclose
-from astropy.utils import isiterable
 from astropy.utils.compat.optional_deps import HAS_SCIPY
 from astropy.wcs import WCS
 
@@ -155,7 +155,7 @@ def test_round_tripping(frame0, frame1, equinox0, equinox1, obstime0, obstime1):
     }
     # also, if any are None, fill in with defaults
     for attrnm in frame0.frame_attributes:
-        if attrs0.get(attrnm, None) is None:
+        if attrs0.get(attrnm) is None:
             if attrnm == "obstime" and frame0.get_frame_attr_defaults()[attrnm] is None:
                 if "equinox" in attrs0:
                     attrs0[attrnm] = attrs0["equinox"]
@@ -767,12 +767,15 @@ def test_repr():
 
 def test_repr_altaz():
     sc2 = SkyCoord(1 * u.deg, 1 * u.deg, frame="icrs", distance=1 * u.kpc)
+
+    expected_el_repr = "(-2309223.0, -3695529.0, -4641767.0)"
+
     loc = EarthLocation(-2309223 * u.m, -3695529 * u.m, -4641767 * u.m)
     time = Time("2005-03-21 00:00:00")
     sc4 = sc2.transform_to(AltAz(location=loc, obstime=time))
     assert repr(sc4).startswith(
         "<SkyCoord (AltAz: obstime=2005-03-21 00:00:00.000, "
-        "location=(-2309223., -3695529., -4641767.) m, pressure=0.0 hPa, "
+        f"location={expected_el_repr} m, pressure=0.0 hPa, "
         "temperature=0.0 deg_C, relative_humidity=0.0, obswl=1.0 micron):"
         " (az, alt, distance) in (deg, deg, kpc)\n"
     )
@@ -813,9 +816,9 @@ def test_ops():
 
     with pytest.raises(TypeError):
         iter(sc)
-    assert not isiterable(sc)
-    assert isiterable(sc_arr)
-    assert isiterable(sc_empty)
+    assert not np.iterable(sc)
+    assert np.iterable(sc_arr)
+    assert np.iterable(sc_empty)
     it = iter(sc_arr)
     assert next(it).dec == sc_arr[0].dec
     assert next(it).dec == sc_arr[1].dec
@@ -1893,6 +1896,27 @@ def test_apply_space_motion():
 
     with pytest.raises(ValueError):
         c2.apply_space_motion(new_obstime=t2)
+
+
+def test_apply_space_motion_after_display():
+    """Regression test for source-coordinate mutation in gh-18334."""
+    coord = SkyCoord(
+        ra=66.42197 * u.deg,
+        dec=-70.003723 * u.deg,
+        distance=Distance(parallax=22.76407875 * u.mas),
+        pm_ra_cosdec=144.91354358 * u.mas / u.yr,
+        pm_dec=5.44564809 * u.mas / u.yr,
+        obstime="J2000",
+    )
+    new_obstime = Time("2027-01-01")
+    original_diff = coord.frame.data.differentials["s"]
+
+    result_before = coord.apply_space_motion(new_obstime)
+    str(coord)
+    result_after = coord.apply_space_motion(new_obstime)
+
+    assert coord.frame.data.differentials["s"] is original_diff
+    assert skycoord_equal(result_before, result_after)
 
 
 def test_custom_frame_skycoord():

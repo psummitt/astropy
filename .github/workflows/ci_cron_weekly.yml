@@ -27,11 +27,21 @@ concurrency:
 
 env:
   IS_CRON: 'true'
+  PY_COLORS: "1"
+
+permissions:
+  contents: read
 
 jobs:
   tests:
     runs-on: ${{ matrix.os }}
-    if: (github.repository == 'astropy/astropy' && (github.event_name == 'schedule' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' || contains(github.event.pull_request.labels.*.name, 'Extra CI')))
+    if: |
+      github.repository == 'astropy/astropy' && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch' ||
+        contains(github.event.pull_request.labels.*.name, 'Extra CI')
+      )
     env:
       ARCH_ON_CI: "normal"
     strategy:
@@ -44,10 +54,10 @@ jobs:
           # that gives too many false positives due to URL timeouts. We also
           # install all dependencies via pip here so we pick up the latest
           # releases.
-          - name: Python 3.10 with dev version of key dependencies
+          - name: Python 3.11 with dev version of key dependencies
             os: ubuntu-latest
-            python: '3.10'
-            toxenv: py310-test-devdeps
+            python: '3.11'
+            toxenv: py311-test-devdeps
 
           # https://github.com/astropy/astropy/issues/15701
           - name: Python 3.11 with dev version of key dependencies without scipy
@@ -55,10 +65,16 @@ jobs:
             python: '3.11'
             toxenv: py311-test-devdeps-noscipy
 
-          - name: Python 3.12 with dev version of infrastructure dependencies
+          - name: Python 3.14 with dev version of infrastructure dependencies
             os: ubuntu-latest
-            python: '3.12'
-            toxenv: py312-test-devinfra
+            python: '3.14'
+            toxenv: py314-test-devpytest
+
+          - name: Python 3.14t (free-threading) with recommended dependencies
+            os: ubuntu-latest
+            python: '3.14t'
+            toxenv: py314t-test-recdeps
+            PYTHON_GIL: 0
 
           - name: Documentation link check
             os: ubuntu-latest
@@ -66,19 +82,14 @@ jobs:
             toxenv: linkcheck
             toxposargs: --color
 
-          # This is sensitive to Python version.
-          - name: Run flynt to check string formatting
-            os: ubuntu-latest
-            python: '3.11'
-            toxenv: flynt
-
     steps:
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       with:
+        persist-credentials: false
         fetch-depth: 0
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       with:
         python-version: ${{ matrix.python }}
     - name: Install language-pack-de and tzdata
@@ -93,6 +104,8 @@ jobs:
       run: python -m pip install --upgrade tox
     - name: Run tests
       run: tox ${{ matrix.toxargs}} -e ${{ matrix.toxenv}} -- ${{ matrix.toxposargs}}
+      env:
+        PYTHON_GIL: ${{ matrix.PYTHON_GIL }}
 
 
   tests_more_architectures:
@@ -100,10 +113,19 @@ jobs:
     # The following architectures are emulated and are therefore slow, so
     # we include them just in the weekly cron. These also serve as a test
     # of using system libraries and using pytest directly.
+    # No doctest run here due to architecture differences in some outputs
+    # (e.g., big-endian or 32-bit OS) with numpy 2.
 
-    runs-on: ubuntu-latest
-    name: Python 3.12
-    if: (github.repository == 'astropy/astropy' && (github.event_name == 'schedule' || github.event_name == 'push' || contains(github.event.pull_request.labels.*.name, 'Extra CI')))
+    runs-on: ubuntu-24.04
+    name: Emulated arch
+    # keep condition in sync with test_arm64
+    if: |
+      github.repository == 'astropy/astropy' && (
+        github.event_name == 'schedule' ||
+        github.event_name == 'push' ||
+        github.event_name == 'workflow_dispatch' ||
+        contains(github.event.pull_request.labels.*.name, 'Extra CI')
+      )
     env:
       ARCH_ON_CI: ${{ matrix.arch }}
 
@@ -111,16 +133,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - arch: aarch64
           - arch: s390x
           - arch: ppc64le
           - arch: armv7
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
         with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: uraimo/run-on-arch-action@v2
+      - uses: uraimo/run-on-arch-action@f9b26e3a1a408d5fd530d20c17b9f3f4428ff8d9 # v3.1.0
         name: Run tests
         id: build
         with:
@@ -131,6 +153,9 @@ jobs:
           env: |
             ARCH_ON_CI: ${{ env.ARCH_ON_CI }}
             IS_CRON: ${{ env.IS_CRON }}
+            # Exported for the whole run, not just the build, so that the
+            # tests that need the bundled WCSLIB headers know to skip.
+            ASTROPY_USE_SYSTEM_ALL: 1
 
           install: |
             apt-get update -q -y
@@ -147,9 +172,12 @@ jobs:
                                   python3 \
                                   python3-erfa \
                                   python3-extension-helpers \
+                                  python3-hypothesis \
                                   python3-jinja2 \
                                   python3-numpy \
-                                  python3-pytest-astropy \
+                                  python3-pytest-astropy-header \
+                                  python3-pytest-cov \
+                                  python3-pytest-remotedata \
                                   python3-setuptools-scm \
                                   python3-yaml \
                                   python3-venv \
@@ -162,8 +190,12 @@ jobs:
             python3 -m venv --system-site-packages tests
             source tests/bin/activate
             # cython and pyerfa versions in ubuntu repos are too old currently
-            pip install -U cython
+            pip install -U cython setuptools packaging
             pip install -U --no-build-isolation pyerfa
-            ASTROPY_USE_SYSTEM_ALL=1 pip3 install -v --no-build-isolation -e .[test]
-            pip3 list
-            python3 -m pytest
+            pip install -v --no-build-isolation -e .[test]
+            pip list
+            # A fresh CI runner has no ~/.astropy directory, but developer
+            # machines usually do. Create empty cache and config directories
+            # so we catch failures that only show up when they already exist.
+            python3 -c "from pathlib import Path; [(Path.home() / '.astropy' / d).mkdir(parents=True, exist_ok=True) for d in ('cache', 'config')]"
+            python3 -m pytest --strict-markers --pyargs astropy -m "not hypothesis"

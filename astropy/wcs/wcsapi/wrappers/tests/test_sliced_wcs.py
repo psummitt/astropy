@@ -11,6 +11,7 @@ from astropy.io.fits.verify import VerifyWarning
 from astropy.time import Time
 from astropy.units import Quantity
 from astropy.wcs.wcs import WCS, FITSFixedWarning
+from astropy.wcs.wcsapi.tests.helpers import assert_celestial_component
 from astropy.wcs.wcsapi.wrappers.sliced_wcs import (
     SlicedLowLevelWCS,
     combine_slices,
@@ -51,7 +52,7 @@ CUNIT3  = deg
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", VerifyWarning)
     WCS_SPECTRAL_CUBE = WCS(Header.fromstring(HEADER_SPECTRAL_CUBE, sep="\n"))
-WCS_SPECTRAL_CUBE.pixel_bounds = [(-1, 11), (-2, 18), (5, 15)]
+WCS_SPECTRAL_CUBE.pixel_bounds = [(-1, 50), (-2, 60), (-5, 70)]
 
 
 def test_invalid_slices():
@@ -90,9 +91,9 @@ This transformation has 3 pixel and 3 world dimensions
 Array shape (Numpy order): (30, 20, 10)
 
 Pixel Dim  Axis Name  Data size  Bounds
-        0  None              10  (-1, 11)
-        1  None              20  (-2, 18)
-        2  None              30  (5, 15)
+        0  None              10  (-1, 50)
+        1  None              20  (-2, 60)
+        2  None              30  (-5, 70)
 
 World Dim  Axis Name  Physical Type     Units
         0  Latitude   pos.galactic.lat  deg
@@ -130,18 +131,11 @@ def test_ellipsis():
         [[True, False, True], [False, True, False], [True, False, True]],
     )
 
-    assert len(wcs.world_axis_object_components) == 3
-    assert wcs.world_axis_object_components[0] == (
-        "celestial",
-        1,
-        "spherical.lat.degree",
-    )
-    assert wcs.world_axis_object_components[1][:2] == ("spectral", 0)
-    assert wcs.world_axis_object_components[2] == (
-        "celestial",
-        0,
-        "spherical.lon.degree",
-    )
+    components = wcs.world_axis_object_components
+    assert len(components) == 3
+    assert_celestial_component(components[0], 1)
+    assert components[1][:2] == ("spectral", 0)
+    assert_celestial_component(components[2], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -158,7 +152,7 @@ def test_ellipsis():
     assert_allclose(wcs.world_to_pixel_values(10, 20, 25), (29.0, 39.0, 44.0))
     assert_equal(wcs.world_to_array_index_values(10, 20, 25), (44, 39, 29))
 
-    assert_equal(wcs.pixel_bounds, [(-1, 11), (-2, 18), (5, 15)])
+    assert_equal(wcs.pixel_bounds, [(-1, 50), (-2, 60), (-5, 70)])
 
     assert str(wcs) == EXPECTED_ELLIPSIS_REPR.strip()
     assert EXPECTED_ELLIPSIS_REPR.strip() in repr(wcs)
@@ -189,8 +183,8 @@ This transformation has 2 pixel and 2 world dimensions
 Array shape (Numpy order): (30, 10)
 
 Pixel Dim  Axis Name  Data size  Bounds
-        0  None              10  (-1, 11)
-        1  None              30  (5, 15)
+        0  None              10  (-1, 50)
+        1  None              30  (-5, 70)
 
 World Dim  Axis Name  Physical Type     Units
         0  Latitude   pos.galactic.lat  deg
@@ -219,10 +213,10 @@ def test_spectral_slice():
 
     assert_equal(wcs.axis_correlation_matrix, [[True, True], [True, True]])
 
-    assert wcs.world_axis_object_components == [
-        ("celestial", 1, "spherical.lat.degree"),
-        ("celestial", 0, "spherical.lon.degree"),
-    ]
+    components = wcs.world_axis_object_components
+    assert len(components) == 2
+    assert_celestial_component(components[0], 1)
+    assert_celestial_component(components[1], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -235,7 +229,7 @@ def test_spectral_slice():
     assert_allclose(wcs.world_to_pixel_values(10, 25), (29.0, 44.0))
     assert_equal(wcs.world_to_array_index_values(10, 25), (44, 29))
 
-    assert_equal(wcs.pixel_bounds, [(-1, 11), (5, 15)])
+    assert_equal(wcs.pixel_bounds, [(-1, 50), (-5, 70)])
 
     assert str(wcs) == EXPECTED_SPECTRAL_SLICE_REPR.strip()
     assert EXPECTED_SPECTRAL_SLICE_REPR.strip() in repr(wcs)
@@ -249,9 +243,9 @@ This transformation has 3 pixel and 3 world dimensions
 Array shape (Numpy order): (30, 6, 10)
 
 Pixel Dim  Axis Name  Data size  Bounds
-        0  None              10  (-1, 11)
-        1  None               6  (-6, 14)
-        2  None              30  (5, 15)
+        0  None              10  (-1, 50)
+        1  None               6  (-6, 56)
+        2  None              30  (-5, 70)
 
 World Dim  Axis Name  Physical Type     Units
         0  Latitude   pos.galactic.lat  deg
@@ -289,18 +283,11 @@ def test_spectral_range():
         [[True, False, True], [False, True, False], [True, False, True]],
     )
 
-    assert len(wcs.world_axis_object_components) == 3
-    assert wcs.world_axis_object_components[0] == (
-        "celestial",
-        1,
-        "spherical.lat.degree",
-    )
-    assert wcs.world_axis_object_components[1][:2] == ("spectral", 0)
-    assert wcs.world_axis_object_components[2] == (
-        "celestial",
-        0,
-        "spherical.lon.degree",
-    )
+    components = wcs.world_axis_object_components
+    assert len(components) == 3
+    assert_celestial_component(components[0], 1)
+    assert components[1][:2] == ("spectral", 0)
+    assert_celestial_component(components[2], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -317,7 +304,7 @@ def test_spectral_range():
     assert_allclose(wcs.world_to_pixel_values(10, 20, 25), (29.0, 35.0, 44.0))
     assert_equal(wcs.world_to_array_index_values(10, 20, 25), (44, 35, 29))
 
-    assert_equal(wcs.pixel_bounds, [(-1, 11), (-6, 14), (5, 15)])
+    assert_equal(wcs.pixel_bounds, [(-1, 50), (-6, 56), (-5, 70)])
 
     assert str(wcs) == EXPECTED_SPECTRAL_RANGE_REPR.strip()
     assert EXPECTED_SPECTRAL_RANGE_REPR.strip() in repr(wcs)
@@ -331,8 +318,8 @@ This transformation has 2 pixel and 3 world dimensions
 Array shape (Numpy order): (30, 20)
 
 Pixel Dim  Axis Name  Data size  Bounds
-        0  None              20  (-2, 18)
-        1  None              30  (5, 15)
+        0  None              20  (-2, 60)
+        1  None              30  (-5, 70)
 
 World Dim  Axis Name  Physical Type     Units
         0  Latitude   pos.galactic.lat  deg
@@ -369,18 +356,11 @@ def test_celestial_slice():
         wcs.axis_correlation_matrix, [[False, True], [True, False], [False, True]]
     )
 
-    assert len(wcs.world_axis_object_components) == 3
-    assert wcs.world_axis_object_components[0] == (
-        "celestial",
-        1,
-        "spherical.lat.degree",
-    )
-    assert wcs.world_axis_object_components[1][:2] == ("spectral", 0)
-    assert wcs.world_axis_object_components[2] == (
-        "celestial",
-        0,
-        "spherical.lon.degree",
-    )
+    components = wcs.world_axis_object_components
+    assert len(components) == 3
+    assert_celestial_component(components[0], 1)
+    assert components[1][:2] == ("spectral", 0)
+    assert_celestial_component(components[2], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -397,7 +377,7 @@ def test_celestial_slice():
     assert_allclose(wcs.world_to_pixel_values(12.4, 20, 25), (39.0, 44.0))
     assert_equal(wcs.world_to_array_index_values(12.4, 20, 25), (44, 39))
 
-    assert_equal(wcs.pixel_bounds, [(-2, 18), (5, 15)])
+    assert_equal(wcs.pixel_bounds, [(-2, 60), (-5, 70)])
 
     assert str(wcs) == EXPECTED_CELESTIAL_SLICE_REPR.strip()
     assert EXPECTED_CELESTIAL_SLICE_REPR.strip() in repr(wcs)
@@ -411,9 +391,9 @@ This transformation has 3 pixel and 3 world dimensions
 Array shape (Numpy order): (30, 20, 5)
 
 Pixel Dim  Axis Name  Data size  Bounds
-        0  None               5  (-6, 6)
-        1  None              20  (-2, 18)
-        2  None              30  (5, 15)
+        0  None               5  (-6, 45)
+        1  None              20  (-2, 60)
+        2  None              30  (-5, 70)
 
 World Dim  Axis Name  Physical Type     Units
         0  Latitude   pos.galactic.lat  deg
@@ -451,18 +431,11 @@ def test_celestial_range():
         [[True, False, True], [False, True, False], [True, False, True]],
     )
 
-    assert len(wcs.world_axis_object_components) == 3
-    assert wcs.world_axis_object_components[0] == (
-        "celestial",
-        1,
-        "spherical.lat.degree",
-    )
-    assert wcs.world_axis_object_components[1][:2] == ("spectral", 0)
-    assert wcs.world_axis_object_components[2] == (
-        "celestial",
-        0,
-        "spherical.lon.degree",
-    )
+    components = wcs.world_axis_object_components
+    assert len(components) == 3
+    assert_celestial_component(components[0], 1)
+    assert components[1][:2] == ("spectral", 0)
+    assert_celestial_component(components[2], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -479,7 +452,7 @@ def test_celestial_range():
     assert_allclose(wcs.world_to_pixel_values(10, 20, 25), (24.0, 39.0, 44.0))
     assert_equal(wcs.world_to_array_index_values(10, 20, 25), (44, 39, 24))
 
-    assert_equal(wcs.pixel_bounds, [(-6, 6), (-2, 18), (5, 15)])
+    assert_equal(wcs.pixel_bounds, [(-6, 45), (-2, 60), (-5, 70)])
 
     assert str(wcs) == EXPECTED_CELESTIAL_RANGE_REPR.strip()
     assert EXPECTED_CELESTIAL_RANGE_REPR.strip() in repr(wcs)
@@ -492,7 +465,7 @@ with warnings.catch_warnings():
     WCS_SPECTRAL_CUBE_ROT = WCS(Header.fromstring(HEADER_SPECTRAL_CUBE, sep="\n"))
 WCS_SPECTRAL_CUBE_ROT.wcs.pc = [[0, 0, 1], [0, 1, 0], [1, 0, 0]]
 WCS_SPECTRAL_CUBE_ROT.wcs.crval[0] = 0
-WCS_SPECTRAL_CUBE_ROT.pixel_bounds = [(-1, 11), (-2, 18), (5, 15)]
+WCS_SPECTRAL_CUBE_ROT.pixel_bounds = [(-1, 50), (-2, 60), (-5, 70)]
 
 EXPECTED_CELESTIAL_RANGE_ROT_REPR = """
 SlicedLowLevelWCS Transformation
@@ -502,9 +475,9 @@ This transformation has 3 pixel and 3 world dimensions
 Array shape (Numpy order): (30, 20, 5)
 
 Pixel Dim  Axis Name  Data size  Bounds
-        0  None               5  (-6, 6)
-        1  None              20  (-2, 18)
-        2  None              30  (5, 15)
+        0  None               5  (-6, 45)
+        1  None              20  (-2, 60)
+        2  None              30  (-5, 70)
 
 World Dim  Axis Name  Physical Type     Units
         0  Latitude   pos.galactic.lat  deg
@@ -542,18 +515,11 @@ def test_celestial_range_rot():
         [[True, False, True], [False, True, False], [True, False, True]],
     )
 
-    assert len(wcs.world_axis_object_components) == 3
-    assert wcs.world_axis_object_components[0] == (
-        "celestial",
-        1,
-        "spherical.lat.degree",
-    )
-    assert wcs.world_axis_object_components[1][:2] == ("spectral", 0)
-    assert wcs.world_axis_object_components[2] == (
-        "celestial",
-        0,
-        "spherical.lon.degree",
-    )
+    components = wcs.world_axis_object_components
+    assert len(components) == 3
+    assert_celestial_component(components[0], 1)
+    assert components[1][:2] == ("spectral", 0)
+    assert_celestial_component(components[2], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -570,7 +536,7 @@ def test_celestial_range_rot():
     assert_allclose(wcs.world_to_pixel_values(1, 15, 24), (14.0, 29.0, 34.0))
     assert_equal(wcs.world_to_array_index_values(1, 15, 24), (34, 29, 14))
 
-    assert_equal(wcs.pixel_bounds, [(-6, 6), (-2, 18), (5, 15)])
+    assert_equal(wcs.pixel_bounds, [(-6, 45), (-2, 60), (-5, 70)])
 
     assert str(wcs) == EXPECTED_CELESTIAL_RANGE_ROT_REPR.strip()
     assert EXPECTED_CELESTIAL_RANGE_ROT_REPR.strip() in repr(wcs)
@@ -645,18 +611,11 @@ def test_no_array_shape():
         [[True, False, True], [False, True, False], [True, False, True]],
     )
 
-    assert len(wcs.world_axis_object_components) == 3
-    assert wcs.world_axis_object_components[0] == (
-        "celestial",
-        1,
-        "spherical.lat.degree",
-    )
-    assert wcs.world_axis_object_components[1][:2] == ("spectral", 0)
-    assert wcs.world_axis_object_components[2] == (
-        "celestial",
-        0,
-        "spherical.lon.degree",
-    )
+    components = wcs.world_axis_object_components
+    assert len(components) == 3
+    assert_celestial_component(components[0], 1)
+    assert components[1][:2] == ("spectral", 0)
+    assert_celestial_component(components[2], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -700,7 +659,12 @@ HEADER_SPECTRAL_CUBE_NONE_TYPES = {
 }
 
 WCS_SPECTRAL_CUBE_NONE_TYPES = WCS(header=HEADER_SPECTRAL_CUBE_NONE_TYPES)
-WCS_SPECTRAL_CUBE_NONE_TYPES.pixel_bounds = [(-1, 11), (-2, 18), (5, 15)]
+WCS_SPECTRAL_CUBE_NONE_TYPES.pixel_bounds = [(-1, 50), (-2, 60), (-5, 70)]
+
+WCS_SPECTRAL_CUBE_NONE_TYPES_NP = WCS(header=HEADER_SPECTRAL_CUBE_NONE_TYPES)
+WCS_SPECTRAL_CUBE_NONE_TYPES_NP.pixel_bounds = [
+    tuple(np.int64(b) for b in t) for t in WCS_SPECTRAL_CUBE_NONE_TYPES.pixel_bounds
+]
 
 
 EXPECTED_ELLIPSIS_REPR_NONE_TYPES = """
@@ -711,9 +675,9 @@ This transformation has 3 pixel and 3 world dimensions
 Array shape (Numpy order): (30, 20, 10)
 
 Pixel Dim  Axis Name  Data size  Bounds
-        0  None              10  (-1, 11)
-        1  None              20  (-2, 18)
-        2  None              30  (5, 15)
+        0  None              10  (-1, 50)
+        1  None              20  (-2, 60)
+        2  None              30  (-5, 70)
 
 World Dim  Axis Name  Physical Type     Units
         0  None       pos.galactic.lat  deg
@@ -749,11 +713,11 @@ def test_ellipsis_none_types():
         [[True, False, True], [False, True, False], [True, False, True]],
     )
 
-    assert wcs.world_axis_object_components == [
-        ("celestial", 1, "spherical.lat.degree"),
-        ("world", 0, "value"),
-        ("celestial", 0, "spherical.lon.degree"),
-    ]
+    components = wcs.world_axis_object_components
+    assert len(components) == 3
+    assert_celestial_component(components[0], 1)
+    assert components[1] == ("world", 0, "value")
+    assert_celestial_component(components[2], 0)
 
     assert wcs.world_axis_object_classes["celestial"][0] is SkyCoord
     assert wcs.world_axis_object_classes["celestial"][1] == ()
@@ -766,9 +730,13 @@ def test_ellipsis_none_types():
     assert_allclose(wcs.world_to_pixel_values(10, 20, 25), (29.0, 39.0, 44.0))
     assert_equal(wcs.world_to_array_index_values(10, 20, 25), (44, 39, 29))
 
-    assert_equal(wcs.pixel_bounds, [(-1, 11), (-2, 18), (5, 15)])
+    assert_equal(wcs.pixel_bounds, [(-1, 50), (-2, 60), (-5, 70)])
 
     assert str(wcs) == EXPECTED_ELLIPSIS_REPR_NONE_TYPES.strip()
+    assert EXPECTED_ELLIPSIS_REPR_NONE_TYPES.strip() in repr(wcs)
+
+    wcs_np = SlicedLowLevelWCS(WCS_SPECTRAL_CUBE_NONE_TYPES_NP, Ellipsis)
+    assert str(wcs_np) == EXPECTED_ELLIPSIS_REPR_NONE_TYPES.strip()
     assert EXPECTED_ELLIPSIS_REPR_NONE_TYPES.strip() in repr(wcs)
 
 
@@ -867,6 +835,10 @@ def test_1d_sliced_low_level(time_1d_wcs):
     assert isinstance(world, np.ndarray)
     assert np.allclose(world, [27, 29])
 
+    pixel = sll.world_to_pixel_values(world)
+    assert isinstance(pixel, np.ndarray)
+    assert np.allclose(pixel, [1, 2])
+
 
 def validate_info_dict(result, expected):
     result_value = result.pop("value")
@@ -878,6 +850,8 @@ def validate_info_dict(result, expected):
 
 def test_dropped_dimensions():
     wcs = WCS_SPECTRAL_CUBE
+
+    print(wcs.pixel_bounds)
 
     sub = SlicedLowLevelWCS(wcs, np.s_[:, :, :])
 
@@ -933,6 +907,7 @@ def test_dropped_dimensions():
 
     dwd = sub.dropped_world_dimensions
     wao_classes = dwd.pop("world_axis_object_classes")
+    wao_components = dwd.pop("world_axis_object_components")
     validate_info_dict(
         dwd,
         {
@@ -941,12 +916,11 @@ def test_dropped_dimensions():
             "world_axis_names": ["Latitude", "Longitude"],
             "world_axis_units": ["deg", "deg"],
             "serialized_classes": False,
-            "world_axis_object_components": [
-                ("celestial", 1, "spherical.lat.degree"),
-                ("celestial", 0, "spherical.lon.degree"),
-            ],
         },
     )
+    assert len(wao_components) == 2
+    assert_celestial_component(wao_components[0], 1)
+    assert_celestial_component(wao_components[1], 0)
 
     assert wao_classes["celestial"][0] is SkyCoord
     assert wao_classes["celestial"][1] == ()
@@ -957,6 +931,7 @@ def test_dropped_dimensions():
 
     dwd = sub.dropped_world_dimensions
     wao_classes = dwd.pop("world_axis_object_classes")
+    wao_components = dwd.pop("world_axis_object_components")
     validate_info_dict(
         dwd,
         {
@@ -965,12 +940,11 @@ def test_dropped_dimensions():
             "world_axis_names": ["Latitude", "Longitude"],
             "world_axis_units": ["deg", "deg"],
             "serialized_classes": False,
-            "world_axis_object_components": [
-                ("celestial", 1, "spherical.lat.degree"),
-                ("celestial", 0, "spherical.lon.degree"),
-            ],
         },
     )
+    assert len(wao_components) == 2
+    assert_celestial_component(wao_components[0], 1)
+    assert_celestial_component(wao_components[1], 0)
 
     assert wao_classes["celestial"][0] is SkyCoord
     assert wao_classes["celestial"][1] == ()
@@ -1002,8 +976,8 @@ def test_dropped_dimensions_4d(cube_4d_fitswcs):
     assert wao_classes["celestial"][2]["unit"] == (u.deg, u.deg)
     assert wao_classes["spectral"][0:3] == (u.Quantity, (), {})
 
-    assert wao_components[0] == ("celestial", 0, "spherical.lon.degree")
-    assert wao_components[1] == ("celestial", 1, "spherical.lat.degree")
+    assert_celestial_component(wao_components[0], 0)
+    assert_celestial_component(wao_components[1], 1)
     assert wao_components[2][0:2] == ("spectral", 0)
 
     sub = SlicedLowLevelWCS(cube_4d_fitswcs, np.s_[12, 12])

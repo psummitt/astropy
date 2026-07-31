@@ -4,10 +4,15 @@ This module implements functions and classes for spatial statistics.
 """
 
 import math
+from typing import Literal, TypeAlias
 
 import numpy as np
+from numpy.typing import NDArray
 
 __all__ = ["RipleysKEstimator"]
+
+# TODO: consider replacing with `StrEnum`
+_ModeOps: TypeAlias = Literal["none", "translation", "ohser", "var-width", "ripley"]
 
 
 class RipleysKEstimator:
@@ -57,7 +62,14 @@ class RipleysKEstimator:
        Point Fields, Akademie Verlag GmbH, Chichester.
     """
 
-    def __init__(self, area, x_max=None, y_max=None, x_min=None, y_min=None):
+    def __init__(
+        self,
+        area: float,
+        x_max: float | None = None,
+        y_max: float | None = None,
+        x_min: float | None = None,
+        y_min: float | None = None,
+    ) -> None:
         self.area = area
         self.x_max = x_max
         self.y_max = y_max
@@ -65,22 +77,22 @@ class RipleysKEstimator:
         self.y_min = y_min
 
     @property
-    def area(self):
+    def area(self) -> float:
         return self._area
 
     @area.setter
-    def area(self, value):
+    def area(self, value: float) -> None:
         if isinstance(value, (float, int)) and value > 0:
             self._area = value
         else:
             raise ValueError(f"area is expected to be a positive number. Got {value}.")
 
     @property
-    def y_max(self):
+    def y_max(self) -> float | None:
         return self._y_max
 
     @y_max.setter
-    def y_max(self, value):
+    def y_max(self, value: float | None) -> None:
         if value is None or isinstance(value, (float, int)):
             self._y_max = value
         else:
@@ -89,11 +101,11 @@ class RipleysKEstimator:
             )
 
     @property
-    def x_max(self):
+    def x_max(self) -> float | None:
         return self._x_max
 
     @x_max.setter
-    def x_max(self, value):
+    def x_max(self, value: float | None) -> None:
         if value is None or isinstance(value, (float, int)):
             self._x_max = value
         else:
@@ -102,31 +114,36 @@ class RipleysKEstimator:
             )
 
     @property
-    def y_min(self):
+    def y_min(self) -> float | None:
         return self._y_min
 
     @y_min.setter
-    def y_min(self, value):
+    def y_min(self, value: float | None) -> None:
         if value is None or isinstance(value, (float, int)):
             self._y_min = value
         else:
             raise ValueError(f"y_min is expected to be a real number. Got {value}.")
 
     @property
-    def x_min(self):
+    def x_min(self) -> float | None:
         return self._x_min
 
     @x_min.setter
-    def x_min(self, value):
+    def x_min(self, value: float | None) -> None:
         if value is None or isinstance(value, (float, int)):
             self._x_min = value
         else:
             raise ValueError(f"x_min is expected to be a real number. Got {value}.")
 
-    def __call__(self, data, radii, mode="none"):
+    def __call__(
+        self,
+        data: NDArray[float],
+        radii: NDArray[float],
+        mode: _ModeOps = "none",
+    ) -> NDArray[float]:
         return self.evaluate(data=data, radii=radii, mode=mode)
 
-    def _pairwise_diffs(self, data):
+    def _pairwise_diffs(self, data: NDArray[float]) -> NDArray[float]:
         npts = len(data)
         diff = np.zeros(shape=(npts * (npts - 1) // 2, 2), dtype=np.double)
         k = 0
@@ -137,7 +154,7 @@ class RipleysKEstimator:
 
         return diff
 
-    def poisson(self, radii):
+    def poisson(self, radii: NDArray[float]) -> NDArray[float]:
         """
         Evaluates the Ripley K function for the homogeneous Poisson process,
         also known as Complete State of Randomness (CSR).
@@ -154,21 +171,36 @@ class RipleysKEstimator:
         """
         return np.pi * radii * radii
 
-    def Lfunction(self, data, radii, mode="none"):
+    def Lfunction(
+        self,
+        data: NDArray[float],
+        radii: NDArray[float],
+        mode: _ModeOps = "none",
+    ) -> NDArray[float]:
         """
         Evaluates the L function at ``radii``. For parameter description
         see ``evaluate`` method.
         """
         return np.sqrt(self.evaluate(data, radii, mode=mode) / np.pi)
 
-    def Hfunction(self, data, radii, mode="none"):
+    def Hfunction(
+        self,
+        data: NDArray[float],
+        radii: NDArray[float],
+        mode: _ModeOps = "none",
+    ) -> NDArray[float]:
         """
         Evaluates the H function at ``radii``. For parameter description
         see ``evaluate`` method.
         """
         return self.Lfunction(data, radii, mode=mode) - radii
 
-    def evaluate(self, data, radii, mode="none"):
+    def evaluate(
+        self,
+        data: NDArray[float],
+        radii: NDArray[float],
+        mode: _ModeOps = "none",
+    ) -> NDArray[float]:
         """
         Evaluates the Ripley K estimator for a given set of values ``radii``.
 
@@ -290,19 +322,19 @@ class RipleysKEstimator:
                 np.minimum(self.x_max - data[:, 0], self.y_max - data[:, 1]),
                 np.minimum(data[:, 0] - self.x_min, data[:, 1] - self.y_min),
             )
+            # Precompute full distance matrix
+            diff = data[:, np.newaxis, :] - data[np.newaxis, :, :]
+            dx = diff[:, :, 0]
+            dy = diff[:, :, 1]
+            dist_matrix = np.hypot(dx, dy)
+            np.fill_diagonal(dist_matrix, np.inf)  # implicitly excludes diagonal
 
             for r in range(len(radii)):
-                for i in range(npts):
-                    for j in range(npts):
-                        if i != j:
-                            diff = abs(data[i] - data[j])
-                            dist = math.sqrt((diff * diff).sum())
-                            if dist < radii[r] < lt_dist[i]:
-                                ripley[r] = ripley[r] + 1
-                lt_dist_sum = (lt_dist > radii[r]).sum()
-                if not lt_dist_sum == 0:
-                    ripley[r] = ripley[r] / lt_dist_sum
-
+                valid_i = lt_dist > radii[r]
+                ripley[r] = np.sum(dist_matrix[valid_i, :] < radii[r])
+                n_interior = valid_i.sum()
+                if n_interior != 0:
+                    ripley[r] = ripley[r] / n_interior
             ripley = self.area * ripley / npts
         # Cressie book eq 8.4.22 page 640
         elif mode == "ripley":

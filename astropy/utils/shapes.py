@@ -3,27 +3,30 @@
 
 import abc
 import numbers
+from collections.abc import Sequence
 from itertools import zip_longest
+from math import prod
+from types import EllipsisType
+from typing import Self, TypeVar
 
 import numpy as np
+import numpy._core as np_core
+from numpy.lib.array_utils import normalize_axis_index
+from numpy.typing import NDArray
 
-from astropy.utils.compat import NUMPY_LT_2_0
-
-if NUMPY_LT_2_0:
-    import numpy.core as np_core
-    from numpy.core.multiarray import normalize_axis_index
-else:
-    import numpy._core as np_core
-    from numpy.lib.array_utils import normalize_axis_index
+from astropy.utils.decorators import deprecated
 
 __all__ = [
+    "IncompatibleShapeError",
     "NDArrayShapeMethods",
     "ShapedLikeNDArray",
     "check_broadcast",
-    "IncompatibleShapeError",
     "simplify_basic_index",
     "unbroadcast",
 ]
+
+
+DT = TypeVar("DT", bound=np.generic)
 
 
 class NDArrayShapeMethods:
@@ -102,7 +105,7 @@ class NDArrayShapeMethods:
         return self._apply("transpose", *args, **kwargs)
 
     @property
-    def T(self):
+    def T(self) -> Self:
         """Return an instance with the data transposed.
 
         Parameters are as for :attr:`~numpy.ndarray.T`.  All internal
@@ -145,9 +148,45 @@ class NDArrayShapeMethods:
         obviously, no output array can be given.
         """
         if out is not None:
-            return NotImplementedError("cannot pass 'out' argument to 'take.")
+            raise NotImplementedError("cannot pass 'out' argument to 'take.")
 
         return self._apply("take", indices, axis=axis, mode=mode)
+
+
+def _combine_helper(func, arrays, axis, out, dtype):
+    """Get normalized axis and create empty output instance if needed."""
+    # Get the final shape by applying the function on arrays of bool with the
+    # same shapes as the input instance. This avoids having to write tests
+    # that the shapes match, etc.
+    empties = [np.empty(shape=np.shape(array), dtype=bool) for array in arrays]
+    shape = func(empties, axis=axis).shape
+    # Normalize the axis to [0, shape> for use in the implementations.
+    axis = normalize_axis_index(axis, len(shape))
+    # If needed, use the first instance as base to create a correctly shaped
+    # output array in which to store the result.
+    if out is None:
+        out = arrays[0]._apply(np.empty_like, shape=shape)
+    return axis, out
+
+
+def concatenate(arrays, axis=0, out=None, dtype=None, casting="same_kind"):
+    axis, out = _combine_helper(np.concatenate, arrays, axis, out, dtype)
+
+    offset = 0
+    for array in arrays:
+        n_el = array.shape[axis]
+        out[(slice(None),) * axis + (slice(offset, offset + n_el),)] = array
+        offset += n_el
+
+    return out
+
+
+def stack(arrays, axis=0, out=None, *, dtype=None, casting="same_kind"):
+    axis, out = _combine_helper(np.stack, arrays, axis, out, dtype)
+    for i, array in enumerate(arrays):
+        out[(slice(None),) * axis + (i,)] = array
+
+    return out
 
 
 class ShapedLikeNDArray(NDArrayShapeMethods, metaclass=abc.ABCMeta):
@@ -179,7 +218,7 @@ class ShapedLikeNDArray(NDArrayShapeMethods, metaclass=abc.ABCMeta):
 
     @property
     @abc.abstractmethod
-    def shape(self):
+    def shape(self) -> tuple[int, ...]:
         """The shape of the underlying data."""
 
     @abc.abstractmethod
@@ -204,28 +243,25 @@ class ShapedLikeNDArray(NDArrayShapeMethods, metaclass=abc.ABCMeta):
         """
 
     @property
-    def ndim(self):
+    def ndim(self) -> int:
         """The number of dimensions of the instance and underlying arrays."""
         return len(self.shape)
 
     @property
-    def size(self):
+    def size(self) -> int:
         """The size of the object, as calculated from its shape."""
-        size = 1
-        for sh in self.shape:
-            size *= sh
-        return size
+        return prod(self.shape)
 
     @property
-    def isscalar(self):
+    def isscalar(self) -> bool:
         return self.shape == ()
 
-    def __len__(self):
+    def __len__(self) -> int:
         if self.isscalar:
             raise TypeError(f"Scalar {self.__class__.__name__!r} object has no len()")
         return self.shape[0]
 
-    def __bool__(self):
+    def __bool__(self) -> bool:
         """Any instance should evaluate to True, except when it is empty."""
         return self.size > 0
 
@@ -271,9 +307,14 @@ class ShapedLikeNDArray(NDArrayShapeMethods, metaclass=abc.ABCMeta):
         np.roll,
         np.delete,
     }
-
+    # TODO: use astropy.units.quantity_helpers.function_helpers.FunctionAssigner?
+    # Maybe better after moving that to astropy.utils, since Masked uses it too.
+    _CUSTOM_FUNCTIONS = {
+        np.concatenate: concatenate,
+        np.stack: stack,
+    }
     # Functions that themselves defer to a method. Those are all
-    # defined in np.core.fromnumeric, but exclude alen as well as
+    # defined in np._core.fromnumeric, but exclude alen as well as
     # sort and partition, which make copies before calling the method.
     _METHOD_FUNCTIONS = {
         getattr(np, name): {
@@ -316,6 +357,9 @@ class ShapedLikeNDArray(NDArrayShapeMethods, metaclass=abc.ABCMeta):
 
             return self._apply(function, *args[1:], **kwargs)
 
+        elif function in self._CUSTOM_FUNCTIONS:
+            return self._CUSTOM_FUNCTIONS[function](*args, **kwargs)
+
         # For functions that defer to methods, use the corresponding
         # method/attribute if we have it.  Otherwise, fall through.
         if self is args[0] and function in self._METHOD_FUNCTIONS:
@@ -333,11 +377,18 @@ class ShapedLikeNDArray(NDArrayShapeMethods, metaclass=abc.ABCMeta):
 
 
 class IncompatibleShapeError(ValueError):
-    def __init__(self, shape_a, shape_a_idx, shape_b, shape_b_idx):
+    def __init__(
+        self,
+        shape_a: tuple[int, ...],
+        shape_a_idx: int,
+        shape_b: tuple[int, ...],
+        shape_b_idx: int,
+    ) -> None:
         super().__init__(shape_a, shape_a_idx, shape_b, shape_b_idx)
 
 
-def check_broadcast(*shapes):
+@deprecated("7.0", alternative="np.broadcast_shapes")
+def check_broadcast(*shapes: tuple[int, ...]) -> tuple[int, ...]:
     """
     Determines whether two or more Numpy arrays can be broadcast with each
     other based on their shape tuple alone.
@@ -385,7 +436,7 @@ def check_broadcast(*shapes):
     return tuple(full_shape[::-1])
 
 
-def unbroadcast(array):
+def unbroadcast(array: NDArray[DT]) -> NDArray[DT]:
     """
     Given an array, return a new array that is the smallest subset of the
     original array that can be re-broadcasted back to the original array.
@@ -408,7 +459,11 @@ def unbroadcast(array):
     return array.reshape(array.shape[first_not_unity:])
 
 
-def simplify_basic_index(basic_index, *, shape):
+def simplify_basic_index(
+    basic_index: int | slice | Sequence[int | slice | EllipsisType | None],
+    *,
+    shape: Sequence[int],
+) -> tuple[int | slice, ...]:
     """
     Given a Numpy basic index, return a tuple of integers and slice objects
     with no default values (`None`) if possible.

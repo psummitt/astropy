@@ -52,124 +52,219 @@ from astropy.utils.exceptions import (
     AstropyWarning,
 )
 
-from . import _wcs, docstrings
+from . import docstrings
+from ._wcs import (
+    PRJ_CODES,
+    PRJ_CONIC,
+    PRJ_CONVENTIONAL,
+    PRJ_CYLINDRICAL,
+    PRJ_HEALPIX,
+    PRJ_POLYCONIC,
+    PRJ_PSEUDOCYLINDRICAL,
+    PRJ_PVN,
+    PRJ_QUADCUBE,
+    PRJ_ZENITHAL,
+    WCSCOMPARE_ANCILLARY,
+    WCSCOMPARE_CRPIX,
+    WCSCOMPARE_TILING,
+    WCSHDO_EFMT,
+    WCSHDO_P12,
+    WCSHDO_P13,
+    WCSHDO_P14,
+    WCSHDO_P15,
+    WCSHDO_P16,
+    WCSHDO_P17,
+    WCSHDR_ALLIMG,
+    WCSHDR_AUXIMG,
+    WCSHDR_BIMGARR,
+    WCSHDR_IMGHEAD,
+    WCSHDR_LONGKEY,
+    WCSHDR_PIXLIST,
+    WCSHDR_RADECSYS,
+    WCSHDR_VSOURCE,
+    WCSLIB_VERSION,
+    WCSSUB_CELESTIAL,
+    WCSSUB_CUBEFACE,
+    WCSSUB_LATITUDE,
+    WCSSUB_LONGITUDE,
+    WCSSUB_SPECTRAL,
+    WCSSUB_STOKES,
+    WCSSUB_TIME,
+    Auxprm,
+    Celprm,
+    DistortionLookupTable,
+    InconsistentAxisTypesError,
+    InvalidCoordinateError,
+    InvalidPrjParametersError,
+    InvalidSubimageSpecificationError,
+    InvalidTabularParametersError,
+    InvalidTransformError,
+    NonseparableSubimageCoordinateSystemError,
+    NoSolutionError,
+    NoWcsKeywordsFoundError,
+    Prjprm,
+    SingularMatrixError,
+    Sip,
+    Tabprm,
+    WcsError,
+    WCSHDO_all,
+    WCSHDO_CNAMna,
+    WCSHDO_CRPXna,
+    WCSHDO_DOBSn,
+    WCSHDO_none,
+    WCSHDO_PVn_ma,
+    WCSHDO_safe,
+    WCSHDO_TPCn_ka,
+    WCSHDO_WCSNna,
+    WCSHDR_all,
+    WCSHDR_CD0i_0ja,
+    WCSHDR_CD00i00j,
+    WCSHDR_CNAMn,
+    WCSHDR_CROTAia,
+    WCSHDR_DOBSn,
+    WCSHDR_EPOCHa,
+    WCSHDR_none,
+    WCSHDR_PC0i_0ja,
+    WCSHDR_PC00i00j,
+    WCSHDR_PROJPn,
+    WCSHDR_PS0i_0ma,
+    WCSHDR_PV0i_0ma,
+    WCSHDR_reject,
+    WCSHDR_strict,
+    WCSHDR_VELREFa,
+    Wcsprm,
+    Wtbarr,
+    _sanity_check,
+    set_wtbarr_fitsio_callback,
+)
+from ._wcs import _Wcs as WCSBase
+from ._wcs import find_all_wcs as find_all_wcs_c
 
 # Mix-in class that provides the APE 14 API
 from .wcsapi.fitswcs import FITSWCSAPIMixin, SlicedFITSWCS
 
 __all__ = [
-    "FITSFixedWarning",
+    "PRJ_CODES",
+    "PRJ_CONIC",
+    "PRJ_CONVENTIONAL",
+    "PRJ_CYLINDRICAL",
+    "PRJ_HEALPIX",
+    "PRJ_POLYCONIC",
+    "PRJ_PSEUDOCYLINDRICAL",
+    "PRJ_PVN",
+    "PRJ_QUADCUBE",
+    "PRJ_ZENITHAL",
     "WCS",
-    "find_all_wcs",
-    "DistortionLookupTable",
-    "Sip",
-    "Tabprm",
-    "Wcsprm",
+    "WCSCOMPARE_ANCILLARY",
+    "WCSCOMPARE_CRPIX",
+    "WCSCOMPARE_TILING",
+    "WCSHDO_EFMT",
+    "WCSHDO_P12",
+    "WCSHDO_P13",
+    "WCSHDO_P14",
+    "WCSHDO_P15",
+    "WCSHDO_P16",
+    "WCSHDO_P17",
+    "WCSHDR_ALLIMG",
+    "WCSHDR_AUXIMG",
+    "WCSHDR_BIMGARR",
+    "WCSHDR_IMGHEAD",
+    "WCSHDR_LONGKEY",
+    "WCSHDR_PIXLIST",
+    "WCSHDR_RADECSYS",
+    "WCSHDR_VSOURCE",
+    "WCSSUB_CELESTIAL",
+    "WCSSUB_CUBEFACE",
+    "WCSSUB_LATITUDE",
+    "WCSSUB_LONGITUDE",
+    "WCSSUB_SPECTRAL",
+    "WCSSUB_STOKES",
+    "WCSSUB_TIME",
     "Auxprm",
     "Celprm",
-    "Prjprm",
-    "Wtbarr",
-    "WCSBase",
-    "validate",
-    "WcsError",
-    "SingularMatrixError",
+    "DistortionLookupTable",
+    "FITSFixedWarning",
     "InconsistentAxisTypesError",
-    "InvalidTransformError",
     "InvalidCoordinateError",
     "InvalidPrjParametersError",
-    "NoSolutionError",
     "InvalidSubimageSpecificationError",
-    "NoConvergence",
-    "NonseparableSubimageCoordinateSystemError",
-    "NoWcsKeywordsFoundError",
     "InvalidTabularParametersError",
+    "InvalidTransformError",
+    "NoConvergence",
+    "NoSolutionError",
+    "NoWcsKeywordsFoundError",
+    "NonseparableSubimageCoordinateSystemError",
+    "Prjprm",
+    "SingularMatrixError",
+    "Sip",
+    "Tabprm",
+    "WCSBase",
+    "WCSHDO_CNAMna",
+    "WCSHDO_CRPXna",
+    "WCSHDO_DOBSn",
+    "WCSHDO_PVn_ma",
+    "WCSHDO_TPCn_ka",
+    "WCSHDO_WCSNna",
+    "WCSHDO_all",
+    "WCSHDO_none",
+    "WCSHDO_safe",
+    "WCSHDR_CD0i_0ja",
+    "WCSHDR_CD00i00j",
+    "WCSHDR_CNAMn",
+    "WCSHDR_CROTAia",
+    "WCSHDR_DOBSn",
+    "WCSHDR_EPOCHa",
+    "WCSHDR_PC0i_0ja",
+    "WCSHDR_PC00i00j",
+    "WCSHDR_PROJPn",
+    "WCSHDR_PS0i_0ma",
+    "WCSHDR_PV0i_0ma",
+    "WCSHDR_VELREFa",
+    "WCSHDR_all",
+    "WCSHDR_none",
+    "WCSHDR_reject",
+    "WCSHDR_strict",
+    "WcsError",
+    "Wcsprm",
+    "Wtbarr",
+    "find_all_wcs",
+    "validate",
 ]
-
 
 __doctest_skip__ = ["WCS.all_world2pix"]
 
 
-if _wcs is not None:
-    if Version(_wcs.__version__) < Version("5.8"):
-        raise ImportError(
-            "astropy.wcs is built with wcslib {0}, but only versions 5.8 and "
-            "later on the 5.x series are known to work.  The version of wcslib "
-            "that ships with astropy may be used."
-        )
-
-    if not _wcs._sanity_check():
-        raise RuntimeError(
-            "astropy.wcs did not pass its sanity check for your build on your platform."
-        )
-
-    _WCSSUB_TIME_SUPPORT = Version(_wcs.__version__) >= Version("7.8")
-    _WCS_TPD_WARN_LT71 = Version(_wcs.__version__) < Version("7.1")
-    _WCS_TPD_WARN_LT74 = Version(_wcs.__version__) < Version("7.4")
-
-    WCSBase = _wcs._Wcs
-    DistortionLookupTable = _wcs.DistortionLookupTable
-    Sip = _wcs.Sip
-    Wcsprm = _wcs.Wcsprm
-    Auxprm = _wcs.Auxprm
-    Celprm = _wcs.Celprm
-    Prjprm = _wcs.Prjprm
-    Tabprm = _wcs.Tabprm
-    Wtbarr = _wcs.Wtbarr
-    WcsError = _wcs.WcsError
-    SingularMatrixError = _wcs.SingularMatrixError
-    InconsistentAxisTypesError = _wcs.InconsistentAxisTypesError
-    InvalidTransformError = _wcs.InvalidTransformError
-    InvalidCoordinateError = _wcs.InvalidCoordinateError
-    NoSolutionError = _wcs.NoSolutionError
-    InvalidSubimageSpecificationError = _wcs.InvalidSubimageSpecificationError
-    NonseparableSubimageCoordinateSystemError = (
-        _wcs.NonseparableSubimageCoordinateSystemError
+if Version(WCSLIB_VERSION) < Version("5.8"):
+    raise ImportError(
+        "astropy.wcs is built with wcslib {0}, but only versions 5.8 and "
+        "later on the 5.x series are known to work.  The version of wcslib "
+        "that ships with astropy may be used."
     )
-    NoWcsKeywordsFoundError = _wcs.NoWcsKeywordsFoundError
-    InvalidTabularParametersError = _wcs.InvalidTabularParametersError
-    InvalidPrjParametersError = _wcs.InvalidPrjParametersError
 
-    # Copy all the constants from the C extension into this module's namespace
-    for key, val in _wcs.__dict__.items():
-        if key.startswith(("WCSSUB_", "WCSHDR_", "WCSHDO_", "WCSCOMPARE_", "PRJ_")):
-            locals()[key] = val
-            __all__.append(key)  # noqa: PYI056
+if not _sanity_check():
+    raise RuntimeError(
+        "astropy.wcs did not pass its sanity check for your build on your platform."
+    )
 
-    # Set coordinate extraction callback for WCS -TAB:
-    def _load_tab_bintable(hdulist, extnam, extver, extlev, kind, ttype, row, ndim):
-        arr = hdulist[(extnam, extver)].data[ttype][row - 1]
+_WCSSUB_TIME_SUPPORT = Version(WCSLIB_VERSION) >= Version("7.8")
+_WCS_TPD_WARN_LT71 = Version(WCSLIB_VERSION) < Version("7.1")
+_WCS_TPD_WARN_LT74 = Version(WCSLIB_VERSION) < Version("7.4")
 
-        if arr.ndim != ndim:
-            if kind == "c" and ndim == 2:
-                arr = arr.reshape((arr.size, 1))
-            else:
-                raise ValueError("Bad TDIM")
 
-        return np.ascontiguousarray(arr, dtype=np.double)
+# Set coordinate extraction callback for WCS -TAB:
+def _load_tab_bintable(hdulist, extnam, extver, extlev, kind, ttype, row, ndim):
+    arr = hdulist[(extnam, extver)].data[ttype][row - 1]
 
-    _wcs.set_wtbarr_fitsio_callback(_load_tab_bintable)
+    if arr.ndim != ndim:
+        if kind == "c" and ndim == 2:
+            arr = arr.reshape((arr.size, 1))
+        else:
+            raise ValueError("Bad TDIM")
 
-else:
-    WCSBase = object
-    Wcsprm = object
-    DistortionLookupTable = object
-    Sip = object
-    Tabprm = object
-    Wtbarr = object
-    WcsError = None
-    SingularMatrixError = None
-    InconsistentAxisTypesError = None
-    InvalidTransformError = None
-    InvalidCoordinateError = None
-    NoSolutionError = None
-    InvalidSubimageSpecificationError = None
-    NonseparableSubimageCoordinateSystemError = None
-    NoWcsKeywordsFoundError = None
-    InvalidTabularParametersError = None
+    return np.ascontiguousarray(arr, dtype=np.double)
 
-    _WCSSUB_TIME_SUPPORT = False
-    _WCS_TPD_WARN_LT71 = False
-    _WCS_TPD_WARN_LT74 = False
+
+set_wtbarr_fitsio_callback(_load_tab_bintable)
 
 
 # Additional relax bit flags
@@ -187,11 +282,11 @@ def _parse_keysel(keysel):
     if keysel is not None:
         for element in keysel:
             if element.lower() == "image":
-                keysel_flags |= _wcs.WCSHDR_IMGHEAD
+                keysel_flags |= WCSHDR_IMGHEAD
             elif element.lower() == "binary":
-                keysel_flags |= _wcs.WCSHDR_BIMGARR
+                keysel_flags |= WCSHDR_BIMGARR
             elif element.lower() == "pixel":
-                keysel_flags |= _wcs.WCSHDR_PIXLIST
+                keysel_flags |= WCSHDR_PIXLIST
             else:
                 raise ValueError(
                     "keysel must be a list of 'image', 'binary' and/or 'pixel'"
@@ -347,6 +442,12 @@ class WCS(FITSWCSAPIMixin, WCSBase):
         `WCS.fix` for more information about this parameter.  Only
         effective when ``fix`` is `True`.
 
+    preserve_units : bool, optional
+        By default, some units are converted to SI, for example spectral
+        axes in units of nm might be converted to m, and celestial axes
+        in units of arcsec might be converted to deg. If ``preserve_units``
+        is set to `True`, the original units will be preserved.
+
     Raises
     ------
     MemoryError
@@ -418,19 +519,29 @@ class WCS(FITSWCSAPIMixin, WCSBase):
         fix=True,
         translate_units="",
         _do_set=True,
+        preserve_units=False,
     ):
         close_fds = []
+
+        self._preserve_units = preserve_units
 
         # these parameters are stored to be used when unpickling a WCS object:
         self._init_kwargs = {
             "keysel": copy.copy(keysel),
             "colsel": copy.copy(colsel),
+            "preserve_units": preserve_units,
         }
 
         if header is None:
             if naxis is None:
                 naxis = 2
-            wcsprm = _wcs.Wcsprm(header=None, key=key, relax=relax, naxis=naxis)
+            wcsprm = Wcsprm(
+                header=None,
+                key=key,
+                relax=relax,
+                naxis=naxis,
+                preserve_units=preserve_units,
+            )
             self.naxis = wcsprm.naxis
             # Set some reasonable defaults.
             det2im = (None, None)
@@ -494,7 +605,7 @@ class WCS(FITSWCSAPIMixin, WCSBase):
                 tmp_header_bytes = tmp_header.tostring().rstrip()
                 if isinstance(tmp_header_bytes, str):
                     tmp_header_bytes = tmp_header_bytes.encode("ascii")
-                tmp_wcsprm = _wcs.Wcsprm(
+                tmp_wcsprm = Wcsprm(
                     header=tmp_header_bytes,
                     key=key,
                     relax=relax,
@@ -502,15 +613,16 @@ class WCS(FITSWCSAPIMixin, WCSBase):
                     colsel=colsel,
                     warnings=False,
                     hdulist=fobj,
+                    preserve_units=preserve_units,
                 )
                 if naxis is not None:
                     try:
                         tmp_wcsprm = tmp_wcsprm.sub(naxis)
                     except ValueError:
                         pass
-                    est_naxis = tmp_wcsprm.naxis if tmp_wcsprm.naxis else 2
+                    est_naxis = tmp_wcsprm.naxis or 2
 
-            except _wcs.NoWcsKeywordsFoundError:
+            except NoWcsKeywordsFoundError:
                 pass
 
             self.naxis = est_naxis
@@ -518,7 +630,9 @@ class WCS(FITSWCSAPIMixin, WCSBase):
             header = fits.Header.fromstring(header_string)
 
             det2im = self._read_det2im_kw(header, fobj, err=minerr)
-            cpdis = self._read_distortion_kw(header, fobj, dist="CPDIS", err=minerr)
+            cpdis = self._read_distortion_kw(
+                header, fobj, dist="CPDIS", err=minerr, key=key
+            )
             self._fix_pre2012_scamp_tpv(header)
 
             sip = self._read_sip_kw(header, wcskey=key)
@@ -534,26 +648,28 @@ class WCS(FITSWCSAPIMixin, WCSBase):
                 header_string = header_string.decode("ascii")
 
             try:
-                wcsprm = _wcs.Wcsprm(
+                wcsprm = Wcsprm(
                     header=header_bytes,
                     key=key,
                     relax=relax,
                     keysel=keysel_flags,
                     colsel=colsel,
                     hdulist=fobj,
+                    preserve_units=preserve_units,
                 )
-            except _wcs.NoWcsKeywordsFoundError:
+            except NoWcsKeywordsFoundError:
                 # The header may have SIP or distortions, but no core
                 # WCS.  That isn't an error -- we want a "default"
                 # (identity) core Wcs transformation in that case.
                 if colsel is None:
-                    wcsprm = _wcs.Wcsprm(
+                    wcsprm = Wcsprm(
                         header=None,
                         key=key,
                         relax=relax,
                         keysel=keysel_flags,
                         colsel=colsel,
                         hdulist=fobj,
+                        preserve_units=preserve_units,
                     )
                 else:
                     raise
@@ -583,7 +699,6 @@ reduce these to 2 dimensions using the naxis kwarg.
                     FITSFixedWarning,
                 )
 
-        self._get_naxis(header)
         WCSBase.__init__(self, sip, cpdis, wcsprm, det2im)
 
         if fix:
@@ -599,6 +714,8 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         for fd in close_fds:
             fd.close()
+
+        self._get_naxis(header)
 
         self._pixel_bounds = None
 
@@ -688,8 +805,7 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         return copy
 
-    if _wcs is not None:
-        sub.__doc__ = _wcs.Wcsprm.sub.__doc__
+    sub.__doc__ = Wcsprm.sub.__doc__
 
     def _fix_scamp(self):
         """
@@ -1043,17 +1159,44 @@ reduce these to 2 dimensions using the naxis kwarg.
         write_d2i(1, self.det2im1)
         write_d2i(2, self.det2im2)
 
-    def _read_distortion_kw(self, header, fobj, dist="CPDIS", err=0.0):
+    def _read_distortion_kw(self, header, fobj, dist="CPDIS", err=0.0, key=" "):
         """
         Reads `distortion paper`_ table-lookup keywords and data, and
         returns a 2-tuple of `~astropy.wcs.DistortionLookupTable`
         objects.
-
         If no `distortion paper`_ keywords are found, ``(None, None)``
         is returned.
+
+        Parameters
+        ----------
+        header : `~astropy.io.fits.Header` or str or bytes
+            FITS header containing distortion keywords
+        fobj : `~astropy.io.fits.HDUList` or None
+            FITS file object for lookup table data
+        dist : str, optional
+            Distortion type: "CPDIS" for prior or "CQDIS" for sequent.
+            Default is "CPDIS".
+        err : float, optional
+            Minimum error threshold. Distortions with maximum error less
+            than this value will be ignored. Default is 0.0.
+        key : str, optional
+            WCS key character (e.g., ' ', 'A', 'B', etc.). This is used
+            to construct the proper keyword names with the appropriate
+            suffix. Default is ' ' (primary WCS).
+
+        Returns
+        -------
+        tuple
+            A 2-tuple of `~astropy.wcs.DistortionLookupTable` objects
+            for axes 1 and 2, or ``(None, None)`` if no distortion
+            keywords are found.
         """
         if isinstance(header, (str, bytes)):
             return (None, None)
+
+        key = key.strip().upper()
+
+        key_suffix = key
 
         if dist == "CPDIS":
             d_kw = "DP"
@@ -1064,38 +1207,52 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         tables = {}
         for i in range(1, self.naxis + 1):
-            d_error_key = err_kw + str(i)
+            axis_key_suffix = str(i) + key_suffix
+            d_error_key = err_kw + axis_key_suffix
+
             if d_error_key in header:
                 d_error = header[d_error_key]
                 del header[d_error_key]
             else:
                 d_error = 0.0
+
             if d_error < err:
                 tables[i] = None
                 continue
-            distortion = dist + str(i)
+
+            distortion = dist + axis_key_suffix
+
             if distortion in header:
                 dis = header[distortion].lower()
                 del header[distortion]
+
                 if dis == "lookup":
                     if not isinstance(fobj, fits.HDUList):
                         raise ValueError(
                             "an astropy.io.fits.HDUList is "
                             "required for Lookup table distortion."
                         )
-                    dp = (d_kw + str(i)).strip()
+
+                    dp = d_kw + axis_key_suffix
+
                     dp_extver_key = dp + ".EXTVER"
                     if dp_extver_key in header:
                         d_extver = header[dp_extver_key]
                         del header[dp_extver_key]
                     else:
                         d_extver = 1
+
                     dp_axis_key = dp + f".AXIS.{i:d}"
-                    if i == header[dp_axis_key]:
-                        d_data = fobj["WCSDVARR", d_extver].data
+                    if dp_axis_key in header:
+                        axis_val = header[dp_axis_key]
+                        if i == axis_val:
+                            d_data = fobj["WCSDVARR", d_extver].data
+                        else:
+                            d_data = (fobj["WCSDVARR", d_extver].data).transpose()
+                        del header[dp_axis_key]
                     else:
-                        d_data = (fobj["WCSDVARR", d_extver].data).transpose()
-                    del header[dp_axis_key]
+                        d_data = fobj["WCSDVARR", d_extver].data
+
                     d_header = fobj["WCSDVARR", d_extver].header
                     d_crpix = (d_header.get("CRPIX1", 0.0), d_header.get("CRPIX2", 0.0))
                     d_crval = (d_header.get("CRVAL1", 0.0), d_header.get("CRVAL2", 0.0))
@@ -1388,7 +1545,7 @@ reduce these to 2 dimensions using the naxis kwarg.
             size = a.shape[0]
             trdir = "sky to detector" if name[-1] == "P" else "detector to sky"
             comment = (
-                f'SIP polynomial order, axis {ord(name[0]) - ord("A"):d}, {trdir:s}'
+                f"SIP polynomial order, axis {ord(name[0]) - ord('A'):d}, {trdir:s}"
             )
             keywords[f"{name}_ORDER"] = size - 1, comment
 
@@ -1573,7 +1730,7 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         Parameters
         ----------
-        {docstrings.TWO_OR_MORE_ARGS('naxis', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("naxis", 8)}
 
             For a transformation that is not two-dimensional, the
             two-argument form must be used.
@@ -1583,7 +1740,7 @@ reduce these to 2 dimensions using the naxis kwarg.
         Returns
         -------
 
-        {docstrings.RETURNS('sky coordinates, in degrees', 8)}
+        {docstrings.RETURNS("sky coordinates, in degrees", 8)}
 
         Notes
         -----
@@ -1640,7 +1797,7 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         Parameters
         ----------
-        {docstrings.TWO_OR_MORE_ARGS('naxis', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("naxis", 8)}
 
             For a transformation that is not two-dimensional, the
             two-argument form must be used.
@@ -1650,7 +1807,7 @@ reduce these to 2 dimensions using the naxis kwarg.
         Returns
         -------
 
-        {docstrings.RETURNS('world coordinates, in degrees', 8)}
+        {docstrings.RETURNS("world coordinates, in degrees", 8)}
 
         Raises
         ------
@@ -2133,7 +2290,7 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         Parameters
         ----------
-        {docstrings.TWO_OR_MORE_ARGS('naxis', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("naxis", 8)}
 
             For a transformation that is not two-dimensional, the
             two-argument form must be used.
@@ -2268,7 +2425,7 @@ reduce these to 2 dimensions using the naxis kwarg.
         Returns
         -------
 
-        {docstrings.RETURNS('pixel coordinates', 8)}
+        {docstrings.RETURNS("pixel coordinates", 8)}
 
         Notes
         -----
@@ -2459,7 +2616,7 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         Parameters
         ----------
-        {docstrings.TWO_OR_MORE_ARGS('naxis', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("naxis", 8)}
 
             For a transformation that is not two-dimensional, the
             two-argument form must be used.
@@ -2469,7 +2626,7 @@ reduce these to 2 dimensions using the naxis kwarg.
         Returns
         -------
 
-        {docstrings.RETURNS('pixel coordinates', 8)}
+        {docstrings.RETURNS("pixel coordinates", 8)}
 
         Notes
         -----
@@ -2521,12 +2678,12 @@ reduce these to 2 dimensions using the naxis kwarg.
         Parameters
         ----------
 
-        {docstrings.TWO_OR_MORE_ARGS('2', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("2", 8)}
 
         Returns
         -------
 
-        {docstrings.RETURNS('focal coordinates', 8)}
+        {docstrings.RETURNS("focal coordinates", 8)}
 
         Raises
         ------
@@ -2550,12 +2707,12 @@ reduce these to 2 dimensions using the naxis kwarg.
         Parameters
         ----------
 
-        {docstrings.TWO_OR_MORE_ARGS('2', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("2", 8)}
 
         Returns
         -------
 
-        {docstrings.RETURNS('focal coordinates', 8)}
+        {docstrings.RETURNS("focal coordinates", 8)}
 
         Raises
         ------
@@ -2579,12 +2736,12 @@ reduce these to 2 dimensions using the naxis kwarg.
         Parameters
         ----------
 
-        {docstrings.TWO_OR_MORE_ARGS('2', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("2", 8)}
 
         Returns
         -------
 
-        {docstrings.RETURNS('pixel coordinates', 8)}
+        {docstrings.RETURNS("pixel coordinates", 8)}
 
         Raises
         ------
@@ -2620,12 +2777,12 @@ reduce these to 2 dimensions using the naxis kwarg.
         Parameters
         ----------
 
-        {docstrings.TWO_OR_MORE_ARGS('2', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("2", 8)}
 
         Returns
         -------
 
-        {docstrings.RETURNS('focal coordinates', 8)}
+        {docstrings.RETURNS("focal coordinates", 8)}
 
         Raises
         ------
@@ -2657,12 +2814,12 @@ reduce these to 2 dimensions using the naxis kwarg.
         Parameters
         ----------
 
-        {docstrings.TWO_OR_MORE_ARGS('2', 8)}
+        {docstrings.TWO_OR_MORE_ARGS("2", 8)}
 
         Returns
         -------
 
-        {docstrings.RETURNS('pixel coordinates', 8)}
+        {docstrings.RETURNS("pixel coordinates", 8)}
 
         Raises
         ------
@@ -2904,7 +3061,7 @@ reduce these to 2 dimensions using the naxis kwarg.
                     if kw[:5] in ("CPDIS", "CQDIS") and val == "TPD":
                         warnings.warn(
                             f"WCS contains a TPD distortion model in {kw}. WCSLIB"
-                            f" {_wcs.__version__} is writing this in a format"
+                            f" {WCSLIB_VERSION} is writing this in a format"
                             " incompatible with current versions - please update to"
                             " 7.4 or use the bundled WCSLIB.",
                             AstropyWarning,
@@ -2915,7 +3072,7 @@ reduce these to 2 dimensions using the naxis kwarg.
                         warnings.warn(
                             f"WCS contains a TPD distortion model in {kw}, which"
                             " requires WCSLIB 7.4 or later to store in a FITS header"
-                            f" (having {_wcs.__version__}).",
+                            f" (having {WCSLIB_VERSION}).",
                             AstropyWarning,
                         )
         else:
@@ -2942,12 +3099,8 @@ reduce these to 2 dimensions using the naxis kwarg.
 
         if display_warning:
             full_header = self.to_header(relax=True, key=key)
-            missing_keys = []
-            for kw, val in full_header.items():
-                if kw not in header:
-                    missing_keys.append(kw)
-
-            if len(missing_keys):
+            missing_keys = [k for k in full_header if k not in header]
+            if missing_keys:
                 warnings.warn(
                     "Some non-standard WCS keywords were excluded:"
                     f" {', '.join(missing_keys)} Use the ``relax`` kwarg to control"
@@ -3089,10 +3242,10 @@ reduce these to 2 dimensions using the naxis kwarg.
                     _naxis.append(header[f"NAXIS{naxis}"])
                 except KeyError:
                     break
+
         if len(_naxis) == 0:
-            _naxis = [0, 0]
-        elif len(_naxis) == 1:
-            _naxis.append(0)
+            _naxis = self.naxis * [0]
+
         self._naxis = _naxis
 
     def printwcs(self):
@@ -3103,11 +3256,16 @@ reduce these to 2 dimensions using the naxis kwarg.
         Return a short description. Simply porting the behavior from
         the `printwcs()` method.
         """
-        description = ["WCS Keywords\n", f"Number of WCS axes: {self.naxis!r}"]
-        sfmt = " : " + "".join([f"{{{i}!r}} " for i in range(self.naxis)])
+        description = ["WCS Keywords", "", f"Number of WCS axes: {self.naxis!r}"]
+        sfmt = " : " + "".join([f"{{{i}}} " for i in range(self.naxis)])
 
-        keywords = ["CTYPE", "CRVAL", "CRPIX"]
-        values = [self.wcs.ctype, self.wcs.crval, self.wcs.crpix]
+        keywords = ["CTYPE", "CUNIT", "CRVAL", "CRPIX"]
+        values = [
+            [repr(v) for v in self.wcs.ctype],
+            [repr(str(v)) for v in self.wcs.cunit],
+            self.wcs.crval,
+            self.wcs.crpix,
+        ]
         for keyword, value in zip(keywords, values):
             description.append(keyword + sfmt.format(*value))
 
@@ -3129,6 +3287,10 @@ reduce these to 2 dimensions using the naxis kwarg.
                 description.append(s.format(*self.wcs.cd[i]))
 
         description.append(f"NAXIS : {'  '.join(map(str, self._naxis))}")
+
+        # Strip trailing space in lines
+        description = [line.rstrip() for line in description]
+
         return "\n".join(description)
 
     def get_axis_types(self):
@@ -3234,7 +3396,11 @@ reduce these to 2 dimensions using the naxis kwarg.
         buffer = io.BytesIO()
         hdulist.writeto(buffer)
 
-        dct = self.__dict__.copy()
+        # Exclude lazily-populated caches: they are pure functions of the
+        # WCS state, so unpickling can regenerate them on demand. Keeping
+        # them out of the pickle avoids bloating the payload and prevents
+        # non-picklable cache contents (e.g. closures) from breaking pickle.
+        dct = {k: v for k, v in self.__dict__.items() if not k.endswith("_cache")}
         dct["_alt_wcskey"] = self.wcs.alt
 
         return (
@@ -3316,7 +3482,7 @@ reduce these to 2 dimensions using the naxis kwarg.
             A tuple containing the same number of slices as the WCS system.
             The ``step`` method, the third argument to a slice, is not
             presently supported.
-        numpy_order : bool
+        numpy_order : bool, default: True
             Use numpy order, i.e. slice the WCS so that an identical slice
             applied to a numpy array will slice the array and WCS in the same
             way. If set to `False`, the WCS will be sliced in FITS order,
@@ -3328,10 +3494,19 @@ reduce these to 2 dimensions using the naxis kwarg.
         wcs_new : `~astropy.wcs.WCS`
             A new resampled WCS axis
         """
+        if view is Ellipsis:
+            return self.deepcopy()
+
         if hasattr(view, "__len__") and len(view) > self.wcs.naxis:
             raise ValueError("Must have # of slices <= # of WCS axes")
         elif not hasattr(view, "__len__"):  # view MUST be an iterable
             view = [view]
+
+        if len(view) < self.wcs.naxis:
+            view = list(view) + [slice(None) for i in range(self.wcs.naxis - len(view))]
+
+        if not numpy_order:
+            view = view[::-1]
 
         if not all(isinstance(x, slice) for x in view):
             # We need to drop some dimensions, but this may not always be
@@ -3357,10 +3532,7 @@ reduce these to 2 dimensions using the naxis kwarg.
             if iview.step is not None and iview.step < 0:
                 raise NotImplementedError("Reversing an axis is not implemented.")
 
-            if numpy_order:
-                wcs_index = self.wcs.naxis - 1 - i
-            else:
-                wcs_index = i
+            wcs_index = self.wcs.naxis - 1 - i
 
             if wcs_index < 2:
                 itables = [x_tables, y_tables][wcs_index]
@@ -3506,7 +3678,7 @@ reduce these to 2 dimensions using the naxis kwarg.
         if not _WCSSUB_TIME_SUPPORT:
             raise NotImplementedError(
                 "Support for 'temporal' axis requires WCSLIB version 7.8 or "
-                f"greater but linked WCSLIB version is {_wcs.__version__}"
+                f"greater but linked WCSLIB version is {WCSLIB_VERSION}"
             )
 
         return self.sub([WCSSUB_TIME])  # Defined by C-ext
@@ -3528,8 +3700,7 @@ reduce these to 2 dimensions using the naxis kwarg.
             self.sip is not None
             or self.cpdis1 is not None
             or self.cpdis2 is not None
-            or self.det2im1 is not None
-            and self.det2im2 is not None
+            or (self.det2im1 is not None and self.det2im2 is not None)
         )
 
     @property
@@ -3558,6 +3729,18 @@ reduce these to 2 dimensions using the naxis kwarg.
         pccd = np.dot(cdelt, pc)
 
         return pccd
+
+    @property
+    def preserve_units(self):
+        """
+        Indicates whether the ``WCS`` class is preserving the original units.
+
+        If `True`, units are always kept as specified, whereas is `False`,
+        units will in some cases be converted to SI/degrees - for example units
+        for celestial axes are converted to degrees, spectral frequencies to
+        Hz, and wavelengths to meters.
+        """
+        return self._preserve_units
 
     def footprint_contains(self, coord, **kwargs):
         """
@@ -3676,7 +3859,7 @@ def find_all_wcs(
     else:
         header_bytes = header_string
 
-    wcsprms = _wcs.find_all_wcs(header_bytes, relax, keysel_flags)
+    wcsprms = find_all_wcs_c(header_bytes, relax, keysel_flags)
 
     result = []
     for wcsprm in wcsprms:
@@ -3760,7 +3943,7 @@ def validate(source):
             result = []
             for hdu in self:
                 content = repr(hdu)
-                if len(content):
+                if content:
                     result.append(content)
             return "\n\n".join(result)
 
@@ -3781,7 +3964,7 @@ def validate(source):
 
         with warnings.catch_warnings(record=True) as warning_lines:
             wcses = find_all_wcs(
-                hdu.header, relax=_wcs.WCSHDR_reject, fix=False, _do_set=False
+                hdu.header, relax=WCSHDR_reject, fix=False, _do_set=False
             )
 
         for wcs in wcses:
@@ -3802,7 +3985,7 @@ def validate(source):
                         hdu.header,
                         hdulist,
                         key=wcs.wcs.alt or " ",
-                        relax=_wcs.WCSHDR_reject,
+                        relax=WCSHDR_reject,
                         fix=True,
                         _do_set=False,
                     )

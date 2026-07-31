@@ -12,9 +12,10 @@ jobs:
       jobname:
         type: string
     docker:
-      - image: cimg/python:3.10
+      - image: cimg/python:3.11
     environment:
-      TOXENV=<< parameters.jobname >>
+      TOXENV: << parameters.jobname >>
+      PY_COLORS: "1"
     steps:
       - checkout
       - run:
@@ -47,9 +48,10 @@ jobs:
       jobname:
         type: string
     docker:
-      - image: cimg/python:3.10
+      - image: cimg/python:3.11
     environment:
       TOXENV: << parameters.jobname >>
+      PY_COLORS: "1"
       GIT_SSH_COMMAND: ssh -i ~/.ssh/id_rsa_bfaaefe38d95110b75c79252bafbe0fc
     steps:
       - checkout
@@ -86,16 +88,16 @@ workflows:
           matrix:
             parameters:
               jobname:
-                - "py310-test-image-mpl334-cov"
-                - "py310-test-image-mpldev-cov"
+                - "py311-test-image-mpl380-cov"
+                - "py311-test-image-mpldev-cov"
 
       - deploy-reference-images:
           name: baseline-<< matrix.jobname >>
           matrix:
             parameters:
               jobname:
-                - "py310-test-image-mpl334-cov"
-                - "py310-test-image-mpldev-cov"
+                - "py311-test-image-mpl380-cov"
+                - "py311-test-image-mpldev-cov"
           requires:
             - << matrix.jobname >>
           filters:

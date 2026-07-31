@@ -1,8 +1,6 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
-import platform
 import warnings
-from itertools import pairwise
 
 import numpy as np
 
@@ -10,7 +8,7 @@ from astropy.utils.exceptions import AstropyUserWarning
 
 from .index import get_index_by_names
 
-__all__ = ["TableGroups", "ColumnGroups"]
+__all__ = ["ColumnGroups", "TableGroups"]
 
 
 def table_group_by(table, keys):
@@ -84,21 +82,11 @@ def _table_group_by(table, keys):
         table_keys_sort = table_keys
 
     # Get the argsort index `idx_sort`, accounting for particulars
-    try:
-        # take advantage of index internal sort if possible
-        if table_index is not None:
-            idx_sort = table_index.sorted_data()
-        else:
-            idx_sort = table_keys_sort.argsort(kind="stable")
-        stable_sort = True
-    except TypeError:
-        # TODO: is this still needed?
-
-        # Some versions (likely 1.6 and earlier) of numpy don't support
-        # 'mergesort' for all data types.  MacOSX (Darwin) doesn't have a stable
-        # sort by default, nor does Windows, while Linux does (or appears to).
-        idx_sort = table_keys_sort.argsort()
-        stable_sort = platform.system() not in ("Darwin", "Windows")
+    # take advantage of index internal sort if possible
+    if table_index is not None:
+        idx_sort = table_index.sorted_data()
+    else:
+        idx_sort = table_keys_sort.argsort(kind="stable")
 
     # Finally do the actual sort of table_keys values
     table_keys = table_keys[idx_sort]
@@ -106,12 +94,6 @@ def _table_group_by(table, keys):
     # Get all keys
     diffs = np.concatenate(([True], table_keys[1:] != table_keys[:-1], [True]))
     indices = np.flatnonzero(diffs)
-
-    # If the sort is not stable (preserves original table order) then sort idx_sort in
-    # place within each group.
-    if not stable_sort:
-        for i0, i1 in pairwise(indices):
-            idx_sort[i0:i1].sort()
 
     # Make a new table and set the _groups to the appropriate TableGroups object.
     # Take the subset of the original keys at the indices values (group boundaries).
@@ -233,7 +215,11 @@ class BaseGroups:
                 mask[i0:i1] = True
             out = parent[mask]
             out.groups._keys = parent.groups.keys[item]
-            out.groups._indices = np.concatenate([[0], np.cumsum(i1s - i0s)])
+            out.groups._indices = (
+                np.array([], dtype=int)  # No selected groups so no indices
+                if len(out) == 0
+                else np.concatenate([[0], np.cumsum(i1s - i0s)])
+            )
 
         return out
 
@@ -241,7 +227,11 @@ class BaseGroups:
         return f"<{self.__class__.__name__} indices={self.indices}>"
 
     def __len__(self):
-        return len(self.indices) - 1
+        _len = len(self.indices)
+        if _len == 1:
+            # Should never happen, indices should either have length = 0 or length >= 2.
+            raise RuntimeError("malformed groups.indices with length=1, this is a bug")
+        return _len - 1 if _len > 0 else 0
 
 
 class ColumnGroups(BaseGroups):
@@ -254,41 +244,45 @@ class ColumnGroups(BaseGroups):
     @property
     def indices(self):
         # If the parent column is in a table then use group indices from table
-        if self.parent_table:
+        if self.parent_table is not None:
             return self.parent_table.groups.indices
         else:
             if self._indices is None:
-                return np.array([0, len(self.parent_column)])
+                # No explicit groups have been defined so default to a single group if
+                # the column has any rows, otherwise return an empty array of indices to
+                # match what group_by() does for an empty column.
+                _len = len(self.parent_column)
+                return np.array([0, _len]) if _len > 0 else np.array([], dtype=int)
             else:
                 return self._indices
 
     @property
     def keys(self):
         # If the parent column is in a table then use group indices from table
-        if self.parent_table:
+        if self.parent_table is not None:
             return self.parent_table.groups.keys
         else:
             return self._keys
 
     def aggregate(self, func):
-        from .column import MaskedColumn
-
         i0s, i1s = self.indices[:-1], self.indices[1:]
         par_col = self.parent_column
-        masked = isinstance(par_col, MaskedColumn)
-        reduceat = hasattr(func, "reduceat")
-        sum_case = func is np.sum
-        mean_case = func is np.mean
         try:
-            if not masked and (reduceat or sum_case or mean_case):
-                if mean_case:
+            # Short-cut for cases where .reduceat is known to work well.
+            if (
+                isinstance(par_col, np.ndarray)
+                and not hasattr(par_col, "mask")
+                and (hasattr(func, "reduceat") or func is np.sum or func is np.mean)
+            ):
+                if func is np.mean:
                     vals = np.add.reduceat(par_col, i0s) / np.diff(self.indices)
                 else:
-                    if sum_case:
+                    if func is np.sum:
                         func = np.add
                     vals = func.reduceat(par_col, i0s)
             else:
-                vals = np.array([func(par_col[i0:i1]) for i0, i1 in zip(i0s, i1s)])
+                # Count on class initializer to be able to concatenate lists.
+                vals = [func(par_col[i0:i1]) for i0, i1 in zip(i0s, i1s)]
             out = par_col.__class__(vals)
         except Exception as err:
             raise TypeError(
@@ -362,7 +356,11 @@ class TableGroups(BaseGroups):
     @property
     def indices(self):
         if self._indices is None:
-            return np.array([0, len(self.parent_table)])
+            # No explicit groups have been defined so default to a single group if
+            # the table has any rows, otherwise return an empty array of indices to
+            # match what group_by() does for an empty table.
+            _len = len(self.parent_table)
+            return np.array([0, _len]) if _len > 0 else np.array([], dtype=int)
         else:
             return self._indices
 

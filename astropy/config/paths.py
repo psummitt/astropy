@@ -4,204 +4,687 @@ data/cache files used by Astropy should be placed.
 """
 
 import os
+import re
 import shutil
 import sys
+from collections.abc import Callable, Generator
+from contextlib import contextmanager, nullcontext
+from copy import deepcopy
+from dataclasses import KW_ONLY, dataclass, field, replace
+from enum import Enum, auto
 from functools import wraps
+from inspect import cleandoc
+from pathlib import Path
+from threading import RLock
+from types import TracebackType
+from typing import (
+    NewType,
+    ParamSpec,
+    Protocol,
+    TypedDict,
+    assert_never,
+    final,
+)
+from warnings import warn
 
-__all__ = ["get_config_dir", "get_cache_dir", "set_temp_config", "set_temp_cache"]
+from astropy.config._tempfile_shim import TemporaryDirectory
+from astropy.utils.exceptions import AstropyUserWarning
+
+__all__ = [
+    "get_cache_dir",
+    "get_cache_dir_path",
+    "get_config_dir",
+    "get_config_dir_path",
+    "set_temp_cache",
+    "set_temp_config",
+    "temporary_cache_dir_path",
+    "temporary_config_dir_path",
+]
+
+P = ParamSpec("P")
 
 
-def _find_home():
-    """Locates and return the home directory (or best approximation) on this
-    system.
+class PathGetter(Protocol):
+    def __call__(self, p: str, /, *, ensure_exists: bool = False) -> Path: ...
 
-    Raises
-    ------
-    OSError
-        If the home directory cannot be located - usually means you are running
-        Astropy on some obscure platform that doesn't have standard home
-        directories.
+
+class _DirType(Enum):
+    CACHE = auto()
+    CONFIG = auto()
+
+    @property
+    def path_getter(self) -> PathGetter:
+        match self:
+            case _DirType.CACHE:
+                return get_cache_dir_path
+            case _DirType.CONFIG:
+                return get_config_dir_path
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    @property
+    def legacy_context_manager(self) -> "type[_SetTempPath]":
+        match self:
+            case _DirType.CACHE:
+                return set_temp_cache
+            case _DirType.CONFIG:
+                return set_temp_config
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    def as_str(self) -> str:
+        return self.name.lower()
+
+
+@final
+@dataclass(slots=True, frozen=True, kw_only=True)
+class _Namespace:
+    root: str
+    fragments: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not all(re.fullmatch(r"[\w-]+", e) for e in self.elements):
+            raise ValueError("Found invalid namespace elements.")
+
+    @classmethod
+    def from_str(cls, s: str, /) -> "_Namespace":
+        elements = s.split(".")
+        return _Namespace(root=elements[0], fragments=tuple(elements[1:]))
+
+    @property
+    def elements(self) -> list[str]:
+        return [self.root, *self.fragments]
+
+    def join(self) -> str:
+        # should round-trip with from_str
+        return ".".join(self.elements)
+
+
+@final
+@dataclass(slots=True, frozen=True, kw_only=True)
+class _DirectoryElements:
+    base_node: Path | None = None
+    sub_nodes: list[str] = field(default_factory=list)
+
+    def join(self) -> Path:
+        if self.base_node is None:
+            raise AssertionError
+        return self.base_node.joinpath(*self.sub_nodes)
+
+
+Error = NewType("Error", str)
+
+
+def _resolve(var: str) -> Path | Error:
+    # if a Path is returned, it is guaranteed to:
+    # - exist
+    # - be absolute (in conformance with the XDG standard)
+    if (s := os.getenv(var)) is None:
+        raise AssertionError
+
+    msg = f"{var} is set to {s}, {{reason}}. This environment variable will be ignored."
+
+    if not (p := Path(s)).exists():
+        return Error(msg.format(reason="but no such file or directory was found"))
+
+    if p.is_file():
+        return Error(msg.format(reason="which is a file (expected a directory)"))
+
+    if not p.is_dir():
+        return Error(
+            msg.format(reason="which is neither a regular file nor a directory")
+        )
+
+    if not p.is_absolute():
+        return Error(msg.format(reason="which is relative (expected an absolute path)"))
+
+    return p
+
+
+class _SpecSource(Enum):
+    XDG = auto()
+    ASTROPY = auto()
+
+
+@final
+@dataclass(slots=True, frozen=True, kw_only=True)
+class _Envvar:
+    spec: _SpecSource
+    dirtype: _DirType
+
+    @property
+    def name(self) -> str:
+        match self.spec, self.dirtype:
+            case _SpecSource.ASTROPY, _DirType.CACHE:
+                return "ASTROPY_CACHE_DIR"
+            case _SpecSource.ASTROPY, _DirType.CONFIG:
+                return "ASTROPY_CONFIG_DIR"
+            case _SpecSource.XDG, _DirType.CACHE:
+                return "XDG_CACHE_HOME"
+            case _SpecSource.XDG, _DirType.CONFIG:
+                return "XDG_CONFIG_HOME"
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    @property
+    def value(self) -> str | None:
+        return os.getenv(self.name)
+
+    def is_defined(self) -> bool:
+        return self.value not in {None, ""}
+
+    def resolve(self) -> Path | Error:
+        assert self.is_defined()
+        return _resolve(self.name)
+
+
+@final
+@dataclass(slots=True, frozen=True, kw_only=True)
+class _DirectoryEnvvarSet:
+    astropy: _Envvar
+    xdg: _Envvar
+
+    def __post_init__(self):
+        match self.astropy.spec, self.xdg.spec:
+            case _SpecSource.ASTROPY, _SpecSource.XDG:
+                pass
+            case _:
+                raise AssertionError
+
+
+@final
+@dataclass(slots=True, frozen=True)
+class _DirectoryFinder:
+    dirtype: _DirType
+    _: KW_ONLY
+    # in Python 3.15+, this should be a frozendict
+    # (i.e., don't rely on this attribute's being mutable)
+    overrides: dict[_Namespace, Path] = field(default_factory=dict)
+
+    @property
+    def envvars(self) -> _DirectoryEnvvarSet:
+        return _DirectoryEnvvarSet(
+            astropy=_Envvar(spec=_SpecSource.ASTROPY, dirtype=self.dirtype),
+            xdg=_Envvar(spec=_SpecSource.XDG, dirtype=self.dirtype),
+        )
+
+    def legacy_default_base_node(self, namespace: str) -> Path:
+        return Path.home() / f".{namespace}" / self.dirtype.as_str()
+
+    def default_base_node(self) -> Path:
+        # default to a XDG-compliant scheme
+        return Path.home() / f".{self.dirtype.as_str()}"
+
+    def find_directory_elements(self, namespace: str) -> _DirectoryElements:
+        ns = _Namespace.from_str(namespace)
+        de = _DirectoryElements(sub_nodes=ns.elements)
+
+        if ns in self.overrides:
+            return replace(de, base_node=self.overrides[ns])
+
+        if self.envvars.astropy.is_defined() and ns.root == "astropy":
+            match self.envvars.astropy.resolve():
+                case Path() as base_node:
+                    return replace(de, base_node=base_node, sub_nodes=ns.fragments)
+                case str() as err:
+                    warn(err, AstropyUserWarning, stacklevel=2)
+                case _ as unreachable:
+                    assert_never(unreachable)
+
+        if self.envvars.xdg.is_defined():
+            match self.envvars.xdg.resolve():
+                case Path() as base_node:
+                    return replace(de, base_node=base_node)
+                case str() as err:
+                    warn(err, AstropyUserWarning, stacklevel=2)
+                case _ as unreachable:
+                    assert_never(unreachable)
+
+        # Default resolution. For backward compatibility, honor a legacy
+        # ~/.<root>/<dirtype> directory if it exists and the new default
+        # location does not. This deliberately lives in the default branch so
+        # it cannot shadow an explicit override or environment variable.
+        default_de = replace(de, base_node=self.default_base_node())
+        legacy_node = self.legacy_default_base_node(namespace)
+        if legacy_node.is_dir() and not default_de.join().exists():
+            return _DirectoryElements(base_node=legacy_node)
+        return default_de
+
+    def find_namespaced_node(self, namespace: str) -> Path:
+        # we intentionally let through some possibly invalid state,
+        # like a file occupying the node where we expect a directory.
+        # The core reason is that there'll always be a difference between the
+        # time we look up the location and the time we actually use it, so it's
+        # impossible to make the look up perfectly safe. In turn, the
+        # responsibility to raise an exception falls on the function that'll
+        # actually try to use it.
+        return self.find_directory_elements(namespace).join()
+
+
+class _TempDirKwargs(TypedDict):
+    dir: os.PathLike[str] | str | None
+    suffix: str | None
+    prefix: str | None
+    delete: bool
+
+
+@contextmanager
+def _temporary_dir_ctx(
+    *,
+    dirtype: _DirType,
+    ctx_gen,
+    namespace: str,
+    dir_: os.PathLike[str] | str | None = None,
+    suffix: str | None = None,
+    prefix: str | None = None,
+    delete: bool = True,
+) -> Generator[Path, None, None]:
+    # the common implementation for temporary_cache_dir_path and temporary_config_dir_path
+
+    kwargs: _TempDirKwargs = {
+        "dir": dir_,
+        "suffix": suffix,
+        "prefix": prefix,
+        "delete": delete,
+    }
+    with _finders.lock, TemporaryDirectory(**kwargs) as tmp_dir, ctx_gen():
+        tmp_path = Path(tmp_dir)
+        initial_df: _DirectoryFinder = _finders.get(dirtype)
+        df: _DirectoryFinder = replace(
+            initial_df,
+            overrides=initial_df.overrides | {_Namespace.from_str(namespace): tmp_path},
+        )
+        _finders.set(dirtype, df)
+
+        try:
+            yield_val = df.find_namespaced_node(namespace)
+            if yield_val != tmp_path:
+                assert yield_val.is_relative_to(tmp_path)
+                yield_val.mkdir(parents=True)
+            yield yield_val
+        finally:
+            _finders.set(dirtype, initial_df)
+
+
+@contextmanager
+def _clear_cfgobjs():
+    from .configuration import _cfgobjs
+
+    with _finders.lock:
+        initial_cfgobjs = deepcopy(_cfgobjs)
+        _cfgobjs.clear()
+
+        try:
+            yield
+        finally:
+            _cfgobjs.clear()
+            _cfgobjs.update(initial_cfgobjs)
+
+
+@dataclass(slots=True, kw_only=True)
+class _Finders:
+    # tie in all global, mutable state from
+    # this module into a single object
+    cache: _DirectoryFinder
+    config: _DirectoryFinder
+
+    # Any number of threads may call any combination of set_temp_cache and set_temp_config,
+    # in any order. Hence they need to share a single lock (otherwise deadlocks would be possible).
+    # In particular, the possibility of nesting more than one instance of each context imposes
+    # the use of a re-entrant lock (RLock).
+    lock: RLock
+
+    def get(self, dirtype: _DirType) -> _DirectoryFinder:
+        match dirtype:
+            case _DirType.CACHE:
+                return self.cache
+            case _DirType.CONFIG:
+                return self.config
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    def set(self, dirtype: _DirType, df: _DirectoryFinder) -> None:
+        match dirtype:
+            case _DirType.CACHE:
+                self.cache = df
+            case _DirType.CONFIG:
+                self.config = df
+            case _ as unreachable:
+                assert_never(unreachable)
+
+
+_finders = _Finders(
+    cache=_DirectoryFinder(_DirType.CACHE),
+    config=_DirectoryFinder(_DirType.CONFIG),
+    lock=RLock(),
+)
+
+
+@contextmanager
+def temporary_cache_dir_path(
+    dir_: os.PathLike[str] | str | None = None,
+    /,
+    *,
+    namespace: str,
+    suffix: str | None = None,
+    prefix: str | None = None,
+    delete: bool = True,
+) -> Generator[Path, None, None]:
     """
-    try:
-        homedir = os.path.expanduser("~")
-    except Exception:
-        # Linux, Unix, AIX, OS X
-        if os.name == "posix":
-            if "HOME" in os.environ:
-                homedir = os.environ["HOME"]
-            else:
-                raise OSError(
-                    "Could not find unix home directory to search for "
-                    "astropy config dir"
-                )
-        elif os.name == "nt":  # This is for all modern Windows (NT or after)
-            if "MSYSTEM" in os.environ and os.environ.get("HOME"):
-                # Likely using an msys shell; use whatever it is using for its
-                # $HOME directory
-                homedir = os.environ["HOME"]
-            # See if there's a local home
-            elif "HOMEDRIVE" in os.environ and "HOMEPATH" in os.environ:
-                homedir = os.path.join(os.environ["HOMEDRIVE"], os.environ["HOMEPATH"])
-            # Maybe a user profile?
-            elif "USERPROFILE" in os.environ:
-                homedir = os.path.join(os.environ["USERPROFILE"])
-            else:
-                try:
-                    import winreg as wreg
+    A context manager to create a temporary directory and define it as the cache
+    directory associated with some namespace.
 
-                    shell_folders = r"Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders"
-                    key = wreg.OpenKey(wreg.HKEY_CURRENT_USER, shell_folders)
+    The directory returned will shadow both ASTROPY_CACHE_DIR and XDG_CACHE_HOME
+    environment variable if defined.
 
-                    homedir = wreg.QueryValueEx(key, "Personal")[0]
-                    key.Close()
-                except Exception:
-                    # As a final possible resort, see if HOME is present
-                    if "HOME" in os.environ:
-                        homedir = os.environ["HOME"]
-                    else:
-                        raise OSError(
-                            "Could not find windows home directory to "
-                            "search for astropy config dir"
-                        )
-        else:
-            # for other platforms, try HOME, although it probably isn't there
-            if "HOME" in os.environ:
-                homedir = os.environ["HOME"]
-            else:
-                raise OSError(
-                    "Could not find a home directory to search for "
-                    "astropy config dir - are you on an unsupported "
-                    "platform?"
-                )
-    return homedir
+    This may also be used as a decorator on a function to set the cache path
+    just within that function.
 
+    Thread safety is guaranteed, but concurrency isn't:
+    only a single thread at a time may execute code within this context.
 
-def get_config_dir(rootname="astropy"):
-    """
-    Determines the package configuration directory name and creates the
-    directory if it doesn't exist.
+    All arguments from :py:class:`tempfile.TemporaryDirectory` are optionally supported,
+    with a couple differences:
 
-    This directory is typically ``$HOME/.astropy/config``, but if the
-    XDG_CONFIG_HOME environment variable is set and the
-    ``$XDG_CONFIG_HOME/astropy`` directory exists, it will be that directory.
-    If neither exists, the former will be created and symlinked to the latter.
+    - ``dir`` is positional-only and must come first
+    - all other arguments are keyword-only
+    - ``delete`` is supported even on Python 3.11
+
+    .. versionadded:: 8.0
 
     Parameters
     ----------
-    rootname : str
-        Name of the root configuration directory. For example, if ``rootname =
-        'pkgname'``, the configuration directory would be ``<home>/.pkgname/``
-        rather than ``<home>/.astropy`` (depending on platform).
+    namespace : str, keyword-only
+        A mandatory unique identifier for the namespace associated to a temporary directory,
+        which will used to name the directory itself.
+        This string must be non-empty, and can only contain alphanumeric characters,
+        ``_``, ``-`` or ``.``.
+        ``.`` is special cased to represent a path separator (see ``os.sep``) in the
+        output directory.
 
-    Returns
-    -------
-    configdir : str
-        The absolute path to the configuration directory.
-
+    See Also
+    --------
+    temporary_config_dir_path: a similar function for configuration directories
+    set_temp_cache: a legacy function with similar goals but a much less predictable behavior
     """
-    # symlink will be set to this if the directory is created
-    linkto = None
-
-    # If using set_temp_config, that overrides all
-    if set_temp_config._temp_path is not None:
-        xch = set_temp_config._temp_path
-        config_path = os.path.join(xch, rootname)
-        if not os.path.exists(config_path):
-            os.mkdir(config_path)
-        return os.path.abspath(config_path)
-
-    # first look for XDG_CONFIG_HOME
-    xch = os.environ.get("XDG_CONFIG_HOME")
-
-    if xch is not None and os.path.exists(xch):
-        xchpth = os.path.join(xch, rootname)
-        if not os.path.islink(xchpth):
-            if os.path.exists(xchpth):
-                return os.path.abspath(xchpth)
-            else:
-                linkto = xchpth
-    return os.path.abspath(_find_or_create_root_dir("config", linkto, rootname))
+    with _temporary_dir_ctx(
+        namespace=namespace,
+        dir_=dir_,
+        suffix=suffix,
+        prefix=prefix,
+        delete=delete,
+        dirtype=_DirType.CACHE,
+        ctx_gen=nullcontext,
+    ) as tmp_path:
+        yield tmp_path
 
 
-def get_cache_dir(rootname="astropy"):
+@contextmanager
+def temporary_config_dir_path(
+    dir_: os.PathLike[str] | str | None = None,
+    /,
+    *,
+    namespace: str,
+    suffix: str | None = None,
+    prefix: str | None = None,
+    delete: bool = True,
+) -> Generator[Path, None, None]:
     """
-    Determines the Astropy cache directory name and creates the directory if it
-    doesn't exist.
+    A context manager to create a temporary directory and define it as the configuration
+    directory associated with some namespace.
 
-    This directory is typically ``$HOME/.astropy/cache``, but if the
-    XDG_CACHE_HOME environment variable is set and the
-    ``$XDG_CACHE_HOME/astropy`` directory exists, it will be that directory.
-    If neither exists, the former will be created and symlinked to the latter.
+    The directory returned will shadow both ASTROPY_CONFIG_DIR and XDG_CONFIG_HOME
+    environment variable if defined.
+
+    This may also be used as a decorator on a function to set the config path
+    just within that function.
+
+    Thread safety is guaranteed, but concurrency isn't:
+    only a single thread at a time may execute code within this context.
+
+    All arguments from :py:class:`tempfile.TemporaryDirectory` are optionally supported,
+    with a couple differences:
+
+    - ``dir`` is positional-only and must come first
+    - all other arguments are keyword-only
+    - ``delete`` is supported even on Python 3.11
+
+    .. versionadded:: 8.0
 
     Parameters
     ----------
-    rootname : str
-        Name of the root cache directory. For example, if
-        ``rootname = 'pkgname'``, the cache directory will be
-        ``<cache>/.pkgname/``.
+    namespace: str, keyword-only
+        A mandatory unique identifier for the namespace associated to a temporary directory,
+        which will used to name the directory itself.
+        This string must be non-empty, and can only contain alphanumeric characters,
+        ``_``, ``-`` or ``.``.
+        ``.`` is special cased to represent a path separator (see ``os.sep``) in the
+        output directory.
 
-    Returns
-    -------
-    cachedir : str
-        The absolute path to the cache directory.
-
+    See Also
+    --------
+    temporary_cache_dir_path: a similar function for cache directories
+    set_temp_config: a legacy function with similar goals but a much less predictable behavior
     """
-    # symlink will be set to this if the directory is created
-    linkto = None
+    with _temporary_dir_ctx(
+        namespace=namespace,
+        dir_=dir_,
+        suffix=suffix,
+        prefix=prefix,
+        delete=delete,
+        dirtype=_DirType.CONFIG,
+        ctx_gen=_clear_cfgobjs,
+    ) as tmp_path:
+        yield tmp_path
 
-    # If using set_temp_cache, that overrides all
-    if set_temp_cache._temp_path is not None:
-        xch = set_temp_cache._temp_path
-        cache_path = os.path.join(xch, rootname)
-        if not os.path.exists(cache_path):
-            os.mkdir(cache_path)
-        return os.path.abspath(cache_path)
 
-    # first look for XDG_CACHE_HOME
-    xch = os.environ.get("XDG_CACHE_HOME")
+def get_config_dir_path(
+    rootname: str = "astropy",
+    *,
+    ensure_exists: bool = True,
+) -> Path:
+    node = _finders.config.find_namespaced_node(rootname)
+    if ensure_exists:
+        node.mkdir(parents=True, exist_ok=True)
+    return node
 
-    if xch is not None and os.path.exists(xch):
-        xchpth = os.path.join(xch, rootname)
-        if not os.path.islink(xchpth):
-            if os.path.exists(xchpth):
-                return os.path.abspath(xchpth)
-            else:
-                linkto = xchpth
 
-    return os.path.abspath(_find_or_create_root_dir("cache", linkto, rootname))
+def get_config_dir(
+    rootname: str = "astropy",
+    *,
+    ensure_exists: bool = True,
+) -> str:
+    return str(get_config_dir_path(rootname, ensure_exists=ensure_exists))
+
+
+def get_cache_dir_path(
+    rootname: str = "astropy",
+    *,
+    ensure_exists: bool = True,
+) -> Path:
+    node = _finders.cache.find_namespaced_node(rootname)
+    if ensure_exists:
+        node.mkdir(parents=True, exist_ok=True)
+    return node
+
+
+def get_cache_dir(
+    rootname: str = "astropy",
+    *,
+    ensure_exists: bool = True,
+) -> str:
+    return str(get_cache_dir_path(rootname, ensure_exists=ensure_exists))
+
+
+if sys.flags.optimize < 2:
+    # with PYTHONOPTIMIZE=2, docstrings are stripped from everywhere,
+    # so don't add them dynamically in that case
+
+    _base_get_config_doc = """\
+        Determines the configuration directory associated with a namespace and creates the
+        directory if it doesn't exist.
+
+        This directory is typically ``$XDG_CONFIG_HOME/<namespace>``, but can be overwritten
+        with the ``ASTROPY_CONFIG_DIR`` environment variable, or with
+        ``temporary_config_dir_path``.
+        {post_header}
+        .. versionchanged:: 8.0
+            In previous versions, the return value pointed to ``$HOME/.astropy/config`` by default.
+            A new environment variable ``ASTROPY_CONFIG_DIR`` is now supported.
+            Symlinks are no longer created in any situation.
+
+        Parameters
+        ----------
+        rootname : str, optional
+            Namespace associated with the directory. For example, for ``'pkgname'``,
+            the directory would be ``$XDG_CONFIG_HOME/pkgname``. Default: ``'astropy'``
+
+        ensure_exists : bool, keyword-only, optional
+            Whether to create the directory (and its parents) if it's missing.
+            Default: True
+
+            .. versionadded:: 8.0
+        """
+    _base_get_cache_doc = """\
+        Determines the cache directory associated with a namespace and, optionally,
+        creates the directory if it doesn't exist.
+
+        This directory is typically ``$XDG_CACHE_HOME/<namespace>``, but can be overwritten
+        with the ``ASTROPY_CACHE_DIR`` environment variable, or with
+        :func:`temporary_cache_dir_path`.
+        {post_header}
+        .. versionchanged:: 8.0
+            In previous versions, the return value pointed to ``$HOME/.astropy/cache`` by default.
+            A new environment variable ``ASTROPY_CACHE_DIR`` is now supported.
+            Symlinks are no longer created in any situation.
+
+        Parameters
+        ----------
+        rootname : str, optional
+            Namespace associated with the directory. For example, for ``'pkgname'``,
+            the directory would be ``$XDG_CACHE_HOME/pkgname``. Default: ``'astropy'``
+
+        ensure_exists : bool, keyword-only, optional
+            Whether to create the directory (and its parents) if it's missing.
+            Default: True
+
+            .. versionadded:: 8.0
+        """
+    _ret_section = """
+        Returns
+        -------
+        {rettype}
+            The absolute path to the {dirtype} directory.
+        """
+
+    get_config_dir_path.__doc__ = cleandoc(
+        _base_get_config_doc.format(post_header="\n        .. versionadded:: 7.0\n")
+        + _ret_section.format(rettype="Path", dirtype="cache")
+    )
+
+    get_config_dir.__doc__ = cleandoc(
+        _base_get_config_doc.format(post_header="")
+        + _ret_section.format(rettype="str", dirtype="cache")
+        + """
+        See Also
+        --------
+        get_config_dir_path : same as this function, except that the return value is a pathlib.Path
+        """
+    )
+
+    get_cache_dir_path.__doc__ = cleandoc(
+        _base_get_cache_doc.format(post_header="\n        .. versionadded:: 7.0\n")
+        + _ret_section.format(rettype="Path", dirtype="cache")
+    )
+
+    get_cache_dir.__doc__ = cleandoc(
+        _base_get_cache_doc.format(post_header="")
+        + _ret_section.format(rettype="str", dirtype="cache")
+        + """
+        See Also
+        --------
+        get_cache_dir_path : same as this function, except that the return value is a pathlib.Path
+        """
+    )
 
 
 class _SetTempPath:
-    _temp_path = None
-    _default_path_getter = None
+    # This base class serves as a deduplication layer for its only two intended
+    # children (set_temp_cache and set_temp_config)
+    _dirtype: _DirType
 
-    def __init__(self, path=None, delete=False):
-        if path is not None:
-            path = os.path.abspath(path)
+    def __init__(
+        self, path: os.PathLike[str] | str | None = None, delete: bool = False
+    ) -> None:
+        if path is None:
+            self._path = None
+        else:
+            if (path := Path(path)).is_file():
+                raise FileExistsError(
+                    f"{path} is a file and cannot be used as a directory"
+                )
+            self._path = path.resolve()
 
-        self._path = path
         self._delete = delete
-        self._prev_path = self.__class__._temp_path
 
-    def __enter__(self):
-        self.__class__._temp_path = self._path
+    @classmethod
+    def _get_directory_finder(cls) -> _DirectoryFinder:
+        match cls._dirtype:
+            case _DirType.CACHE:
+                return _finders.cache
+            case _DirType.CONFIG:
+                return _finders.config
+            case _ as unreachable:
+                assert_never(unreachable)
+
+    @classmethod
+    def _get_current_override(cls) -> Path | None:
+        return cls._get_directory_finder().overrides.get(_Namespace(root="astropy"))
+
+    def __enter__(self) -> str:
+        _finders.lock.acquire()
+        self._prev_path = self._get_current_override()
         try:
-            return self._default_path_getter("astropy")
+            initial_df = self._get_directory_finder()
+            self._prev_df = initial_df
+            ns = _Namespace(root="astropy")
+            if self._path is None:
+                overrides = initial_df.overrides.copy()
+                if ns in overrides:
+                    del overrides[ns]
+            else:
+                overrides = initial_df.overrides | {ns: self._path}
+
+            df: _DirectoryFinder = replace(initial_df, overrides=overrides)
         except Exception:
-            self.__class__._temp_path = self._prev_path
+            _finders.lock.release()
+            raise
+        try:
+            _finders.set(self._dirtype, df)
+            return str(df.find_namespaced_node("astropy"))
+        except Exception:
+            _finders.set(self._dirtype, initial_df)
+            _finders.lock.release()
             raise
 
-    def __exit__(self, *args):
-        self.__class__._temp_path = self._prev_path
+    def __exit__(
+        self,
+        type: type[BaseException] | None,
+        value: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        try:
+            if self._delete and self._path is not None:
+                shutil.rmtree(self._path)
+        finally:
+            _finders.set(self._dirtype, self._prev_df)
+            _finders.lock.release()
 
-        if self._delete and self._path is not None:
-            shutil.rmtree(self._path)
-
-    def __call__(self, func):
+    def __call__(self, func: Callable[P, object]) -> Callable[P, None]:
         """Implements use as a decorator."""
 
         @wraps(func)
-        def wrapper(*args, **kwargs):
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> None:
             with self:
                 func(*args, **kwargs)
 
@@ -219,6 +702,14 @@ class set_temp_config(_SetTempPath):
     This may also be used as a decorator on a function to set the config path
     just within that function.
 
+    Thread safety is guaranteed since astropy 7.2.1, but concurrency isn't:
+    only a single thread at a time may execute code within this context.
+
+    .. versionchanged:: 8.0
+        This function is soft-deprecated. It won't emit deprecation warnings but its
+        use is discouraged for new code, as the exact behavior is hard to predict.
+        Prefer :func:`temporary_config_dir_path` where available.
+
     Parameters
     ----------
     path : str, optional
@@ -232,28 +723,55 @@ class set_temp_config(_SetTempPath):
     delete : bool, optional
         If True, cleans up the temporary directory after exiting the temp
         context (default: False).
+
+    See Also
+    --------
+    temporary_config_dir_path: a function with similar goals but a much more predictable behavior
     """
 
-    _default_path_getter = staticmethod(get_config_dir)
+    _dirtype = _DirType.CONFIG
 
-    def __enter__(self):
+    def __enter__(self) -> str:
         # Special case for the config case, where we need to reset all the
         # cached config objects.  We do keep the cache, since some of it
         # may have been set programmatically rather than be stored in the
         # config file (e.g., iers.conf.auto_download=False for our tests).
         from .configuration import _cfgobjs
 
-        self._cfgobjs_copy = _cfgobjs.copy()
-        _cfgobjs.clear()
-        return super().__enter__()
+        _finders.lock.acquire()
 
-    def __exit__(self, *args):
-        from .configuration import _cfgobjs
+        try:
+            _cfgobjs_copy = _cfgobjs.copy()
+        except Exception:
+            _finders.lock.release()
+            raise
 
-        _cfgobjs.clear()
-        _cfgobjs.update(self._cfgobjs_copy)
-        del self._cfgobjs_copy
-        super().__exit__(*args)
+        self._cfgobjs_copy = _cfgobjs_copy
+
+        try:
+            _cfgobjs.clear()
+            return super().__enter__()
+        except Exception:
+            _cfgobjs.update(self._cfgobjs_copy)
+            del self._cfgobjs_copy
+            _finders.lock.release()
+            raise
+
+    def __exit__(
+        self,
+        type: type[BaseException] | None,
+        value: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        try:
+            from .configuration import _cfgobjs
+
+            _cfgobjs.clear()
+            _cfgobjs.update(self._cfgobjs_copy)
+            del self._cfgobjs_copy
+            super().__exit__(type, value, tb)
+        finally:
+            _finders.lock.release()
 
 
 class set_temp_cache(_SetTempPath):
@@ -269,6 +787,14 @@ class set_temp_cache(_SetTempPath):
     This may also be used as a decorator on a function to set the cache path
     just within that function.
 
+    Thread safety is guaranteed since astropy 7.2.1, but concurrency isn't:
+    only a single thread at a time may execute code within this context.
+
+    .. versionchanged:: 8.0
+        This function is soft-deprecated. It won't emit deprecation warnings but its
+        use is discouraged for new code, as the exact behavior is hard to predict.
+        Prefer :func:`temporary_cache_dir_path` where available.
+
     Parameters
     ----------
     path : str
@@ -282,44 +808,10 @@ class set_temp_cache(_SetTempPath):
     delete : bool, optional
         If True, cleans up the temporary directory after exiting the temp
         context (default: False).
+
+    See Also
+    --------
+    temporary_cache_dir_path: a function with similar goals but a much more predictable behavior
     """
 
-    _default_path_getter = staticmethod(get_cache_dir)
-
-
-def _find_or_create_root_dir(dirnm, linkto, pkgname="astropy"):
-    innerdir = os.path.join(_find_home(), f".{pkgname}")
-    maindir = os.path.join(_find_home(), f".{pkgname}", dirnm)
-
-    if not os.path.exists(maindir):
-        # first create .astropy dir if needed
-        if not os.path.exists(innerdir):
-            try:
-                os.mkdir(innerdir)
-            except OSError:
-                if not os.path.isdir(innerdir):
-                    raise
-        elif not os.path.isdir(innerdir):
-            raise OSError(
-                f"Intended {pkgname} {dirnm} directory {maindir} is actually a file."
-            )
-
-        try:
-            os.mkdir(maindir)
-        except OSError:
-            if not os.path.isdir(maindir):
-                raise
-
-        if (
-            not sys.platform.startswith("win")
-            and linkto is not None
-            and not os.path.exists(linkto)
-        ):
-            os.symlink(maindir, linkto)
-
-    elif not os.path.isdir(maindir):
-        raise OSError(
-            f"Intended {pkgname} {dirnm} directory {maindir} is actually a file."
-        )
-
-    return os.path.abspath(maindir)
+    _dirtype = _DirType.CACHE

@@ -4,6 +4,7 @@ Define the Enhanced Character-Separated-Values (ECSV) which allows for reading a
 writing all the meta data associated with an astropy Table object.
 """
 
+import csv
 import json
 import re
 import warnings
@@ -12,7 +13,8 @@ from collections import OrderedDict
 import numpy as np
 
 from astropy.io.ascii.core import convert_numpy
-from astropy.table import meta, serialize
+from astropy.io.misc.ecsv import table_meta_as_dict
+from astropy.table import Column, MaskedColumn, meta, serialize
 from astropy.utils.data_info import serialize_context_as
 from astropy.utils.exceptions import AstropyUserWarning
 
@@ -44,10 +46,32 @@ class InvalidEcsvDatatypeWarning(AstropyUserWarning):
     """
 
 
+class ECSVHeaderSplitter(core.DefaultSplitter):
+    """Splitter for reading header that does not strip column names.
+
+    For instance column names like " # weird "" name ", the ECSV header preserves
+    leading and trailing whitespace.
+    """
+
+    process_val = None
+
+
+class ECSVHeaderSplitterQuoteAll(ECSVHeaderSplitter):
+    """Special case splitter used for writing header line to quote all the column names.
+
+    This is used if the first column name starts with the ECSV comment regex or if any
+    column names have leading or trailing whitespace. See issue #18710.
+    """
+
+    quoting = csv.QUOTE_ALL
+
+
 class EcsvHeader(basic.BasicHeader):
     """Header class for which the column definition line starts with the
     comment character.  See the :class:`CommentedHeader` class  for an example.
     """
+
+    splitter_class = ECSVHeaderSplitter
 
     def process_lines(self, lines):
         """Return only non-blank lines that start with the comment regexp.  For these
@@ -93,7 +117,7 @@ class EcsvHeader(basic.BasicHeader):
         header = {"cols": self.cols, "schema": "astropy-2.0"}
 
         if self.table_meta:
-            header["meta"] = self.table_meta
+            header["meta"] = OrderedDict(self.table_meta)
 
         # Set the delimiter only for the non-default option(s)
         if self.splitter.delimiter != " ":
@@ -105,7 +129,18 @@ class EcsvHeader(basic.BasicHeader):
         ] + meta.get_yaml_from_header(header)
 
         lines.extend([self.write_comment + line for line in header_yaml_lines])
-        lines.append(self.splitter.join([x.info.name for x in self.cols]))
+
+        names = [col.info.name for col in self.cols]
+        # If first col name looks like ECSV header start (r"\s*#") or any have leading
+        # or trailing whitespace then quote all fields in the header line.
+        if (names and re.match(self.comment, names[0])) or any(
+            name.strip() != name for name in names
+        ):
+            splitter = ECSVHeaderSplitterQuoteAll()
+            splitter.delimiter = self.splitter.delimiter
+        else:
+            splitter = self.splitter  # use default splitter
+        lines.append(splitter.join(names))
 
     def write_comments(self, lines, meta):
         """
@@ -155,11 +190,12 @@ class EcsvHeader(basic.BasicHeader):
 
         try:
             header = meta.get_header_from_yaml(lines)
-        except meta.YamlParseError:
-            raise core.InconsistentTableError("unable to parse yaml in meta header")
+        except meta.YamlParseError as e:
+            raise core.InconsistentTableError(
+                "unable to parse yaml in meta header"
+            ) from e
 
-        if "meta" in header:
-            self.table_meta = header["meta"]
+        self.table_meta = table_meta_as_dict(header)
 
         if "delimiter" in header:
             delimiter = header["delimiter"]
@@ -171,7 +207,8 @@ class EcsvHeader(basic.BasicHeader):
             self.data.splitter.delimiter = delimiter
 
         # Create the list of io.ascii column objects from `header`
-        header_cols = OrderedDict((x["name"], x) for x in header["datatype"])
+        header_cols = {x["name"]: x for x in header["datatype"]}
+
         self.names = [x["name"] for x in header["datatype"]]
 
         # Read the first non-commented line of table and split to get the CSV
@@ -257,9 +294,7 @@ class EcsvOutputter(core.TableOutputter):
         # appropriate mixin columns and remove the original data columns.
         # If no __mixin_columns__ exists then this function just passes back
         # the input table.
-        out = serialize._construct_mixins_from_columns(out)
-
-        return out
+        return serialize._construct_mixins_from_columns(out)
 
     def _convert_vals(self, cols):
         """READ: Convert str_vals in `cols` to final arrays with correct dtypes.
@@ -376,6 +411,38 @@ class EcsvOutputter(core.TableOutputter):
                 raise ValueError(f"column {col.name!r} failed to convert: {exc}")
 
 
+# Formatting helper functions for EcsvData.str_vals() to convert column values to
+# strings for writing.
+def _format_col_item(obj) -> str:
+    # For multi-dim or object data, use JSON to convert an item to a string.
+    try:
+        obj = obj.tolist()
+    except AttributeError:
+        pass
+    return json.dumps(obj, separators=(",", ":"))
+
+
+def _format_col_nd_or_object(col: Column | MaskedColumn) -> list[str]:
+    # For multi-dim or object columns, use JSON to convert each item to a string.
+    return [_format_col_item(item) for item in col]
+
+
+def _format_col_1d_non_object(col: Column | MaskedColumn) -> list[str]:
+    # Fast path for 1-d non-object columns: iterate over the plain
+    # ndarray rather than indexing the column, which avoids the
+    # significant per-item overhead of (Masked)Column.__getitem__.
+    data = col.data
+    if isinstance(data, np.ma.MaskedArray):
+        data = data.data
+
+    if data.dtype.kind == "S":
+        # Column.__getitem__ decodes bytes scalars to str; match
+        # that here so bytes columns are not written as b'...'.
+        return [val.decode("utf-8", errors="replace") for val in data]
+    else:
+        return [str(val) for val in data]
+
+
 class EcsvData(basic.BasicData):
     def _set_fill_values(self, cols):
         """READ: Set the fill values of the individual cols based on fill_values of BaseData.
@@ -420,23 +487,13 @@ class EcsvData(basic.BasicData):
         - Only replace masked values with "", not the generalized filling
         """
         for col in self.cols:
-            if len(col.shape) > 1 or col.info.dtype.kind == "O":
-
-                def format_col_item(idx):
-                    obj = col[idx]
-                    try:
-                        obj = obj.tolist()
-                    except AttributeError:
-                        pass
-                    return json.dumps(obj, separators=(",", ":"))
-
-            else:
-
-                def format_col_item(idx):
-                    return str(col[idx])
-
+            format_col = (
+                _format_col_nd_or_object
+                if len(col.shape) > 1 or col.info.dtype.kind == "O"
+                else _format_col_1d_non_object
+            )
             try:
-                col.str_vals = [format_col_item(idx) for idx in range(len(col))]
+                col.str_vals = format_col(col)
             except TypeError as exc:
                 raise TypeError(
                     f"could not convert column {col.info.name!r} to string: {exc}"
@@ -448,8 +505,7 @@ class EcsvData(basic.BasicData):
                 for idx in col.mask.nonzero()[0]:
                     col.str_vals[idx] = ""
 
-        out = [col.str_vals for col in self.cols]
-        return out
+        return [col.str_vals for col in self.cols]
 
 
 class Ecsv(basic.Basic):
@@ -481,7 +537,6 @@ class Ecsv(basic.Basic):
     ----- -----
       001     2
       004     3
-
     """
 
     _format_name = "ecsv"
@@ -513,5 +568,4 @@ class Ecsv(basic.Basic):
             Output table for writing
         """
         with serialize_context_as("ecsv"):
-            out = serialize.represent_mixins_as_columns(table)
-        return out
+            return serialize.represent_mixins_as_columns(table)

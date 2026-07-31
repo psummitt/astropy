@@ -11,6 +11,7 @@ import erfa
 import numpy as np
 
 import astropy.units as u
+from astropy.utils.compat.optional_deps import HAS_MATPLOTLIB
 from astropy.utils.decorators import classproperty, lazyproperty
 from astropy.utils.exceptions import AstropyDeprecationWarning, AstropyUserWarning
 from astropy.utils.masked import Masked
@@ -19,42 +20,43 @@ from . import _parse_times, conf, utils
 from .utils import day_frac, quantity_day_frac, two_product, two_sum
 
 __all__ = [
+    "TIME_DELTA_FORMATS",
+    "TIME_FORMATS",
     "AstropyDatetimeLeapSecondWarning",
-    "TimeFormat",
-    "TimeJD",
-    "TimeMJD",
-    "TimeFromEpoch",
-    "TimeUnix",
-    "TimeUnixTai",
+    "TimeBesselianEpoch",
+    "TimeBesselianEpochString",
     "TimeCxcSec",
-    "TimeGPS",
-    "TimeDecimalYear",
-    "TimePlotDate",
-    "TimeUnique",
     "TimeDatetime",
-    "TimeString",
+    "TimeDatetime64",
+    "TimeDecimalYear",
+    "TimeDeltaDatetime",
+    "TimeDeltaFormat",
+    "TimeDeltaJD",
+    "TimeDeltaNumeric",
+    "TimeDeltaQuantityString",
+    "TimeDeltaSec",
+    "TimeEpochDate",
+    "TimeEpochDateString",
+    "TimeFITS",
+    "TimeFormat",
+    "TimeFromEpoch",
+    "TimeGPS",
+    "TimeGalexSec",
     "TimeISO",
     "TimeISOT",
-    "TimeFITS",
-    "TimeYearDayTime",
-    "TimeEpochDate",
-    "TimeBesselianEpoch",
+    "TimeJD",
     "TimeJulianEpoch",
-    "TimeDeltaFormat",
-    "TimeDeltaSec",
-    "TimeDeltaJD",
-    "TimeDeltaQuantityString",
-    "TimeEpochDateString",
-    "TimeBesselianEpochString",
     "TimeJulianEpochString",
-    "TIME_FORMATS",
-    "TIME_DELTA_FORMATS",
-    "TimezoneInfo",
-    "TimeDeltaDatetime",
-    "TimeDatetime64",
-    "TimeYMDHMS",
+    "TimeMJD",
     "TimeNumeric",
-    "TimeDeltaNumeric",
+    "TimePlotDate",
+    "TimeString",
+    "TimeUnique",
+    "TimeUnix",
+    "TimeUnixTai",
+    "TimeYMDHMS",
+    "TimeYearDayTime",
+    "TimezoneInfo",
 ]
 
 __doctest_skip__ = ["TimePlotDate"]
@@ -188,7 +190,7 @@ class TimeFormat:
         if "subfmts" in cls.__dict__:
             cls.subfmts = _regexify_subfmts(cls.subfmts)
 
-        return super().__init_subclass__(**kwargs)
+        super().__init_subclass__(**kwargs)
 
     @classmethod
     def _get_allowed_subfmt(cls, subfmt):
@@ -300,11 +302,8 @@ class TimeFormat:
         elif val1.size == 0:
             isfinite1 = False
         ok1 = (
-            val1.dtype.kind == "f"
-            and val1.dtype.itemsize >= 8
-            and isfinite1
-            or val1.size == 0
-        )
+            val1.dtype.kind == "f" and val1.dtype.itemsize >= 8 and isfinite1
+        ) or val1.size == 0
         ok2 = (
             val2 is None
             or (
@@ -549,7 +548,7 @@ class TimeNumeric(TimeFormat):
             val1.dtype if orig_val2_is_none else np.result_type(val1.dtype, val2.dtype)
         )
         subfmts = self._select_subfmts(self.in_subfmt)
-        for subfmt, dtype, convert, _ in subfmts:
+        for _, dtype, convert, _ in subfmts:  # noqa: B007
             if np.issubdtype(val_dtype, dtype):
                 break
         else:
@@ -558,12 +557,12 @@ class TimeNumeric(TimeFormat):
         if convert is not None:
             try:
                 val1, val2 = convert(val1, val2)
-            except Exception:
+            except Exception as err:
                 raise TypeError(
                     f"for {self.name} class, input should be (long) doubles, string, "
                     "or Decimal, and second values are only allowed for "
                     "(long) doubles."
-                )
+                ) from err
 
         return val1, val2
 
@@ -648,14 +647,26 @@ def _check_val_type_not_quantity(format_name, val1, val2):
 
 class TimeDecimalYear(TimeNumeric):
     """
-    Time as a decimal year, with integer values corresponding to midnight
-    of the first day of each year.
+    Time as a decimal year, with integer values corresponding to midnight of the first
+    day of each year.
 
-    For example 2000.5 corresponds to the ISO time '2000-07-02 00:00:00'.
+    The fractional part represents the exact fraction of the year, considering the
+    precise number of days in the year (365 or 366). The following example shows
+    essentially how the decimal year is computed::
 
-    Since for this format the length of the year varies between 365 and
-    366 days, it is not possible to use Quantity input, in which a year
-    is always 365.25 days.
+      >>> from astropy.time import Time
+      >>> tm = Time("2024-04-05T12:34:00")
+      >>> tm0 = Time("2024-01-01T00:00:00")
+      >>> tm1 = Time("2025-01-01T00:00:00")
+      >>> print(2024 + (tm.jd - tm0.jd) / (tm1.jd - tm0.jd))  # doctest: +FLOAT_CMP
+      2024.2609934729812
+      >>> print(tm.decimalyear)  # doctest: +FLOAT_CMP
+      2024.2609934729812
+
+    Since for this format the length of the year varies between 365 and 366 days, it is
+    not possible to use Quantity input, in which a year is always 365.25 days.
+
+    This format is convenient for low-precision applications or for plotting data.
     """
 
     name = "decimalyear"
@@ -885,17 +896,17 @@ class TimeUnixTai(TimeUnix):
       >>> from astropy.time import Time
       >>> t = Time('2020-01-01', scale='utc')
       >>> t.unix_tai - t.unix
-      37.0
+      np.float64(37.0)
 
       >>> # Before 1972, the offset between TAI and UTC was not integer
       >>> t = Time('1970-01-01', scale='utc')
       >>> t.unix_tai - t.unix  # doctest: +FLOAT_CMP
-      8.000082
+      np.float64(8.000082)
 
       >>> # Initial offset of 10 seconds in 1972
       >>> t = Time('1972-01-01', scale='utc')
       >>> t.unix_tai - t.unix
-      10.0
+      np.float64(10.0)
     """
 
     name = "unix_tai"
@@ -915,6 +926,27 @@ class TimeCxcSec(TimeFromEpoch):
     epoch_val2 = None
     epoch_scale = "tt"
     epoch_format = "iso"
+
+
+class TimeGalexSec(TimeUnix):
+    """
+    GALEX time: seconds since 1980-01-06 00:00:00 UTC not including leap seconds.
+
+    This is equivalent to the unix time minus 315964800.0, as shown below::
+
+      >>> t = Time("2025-01-01")
+      >>> t.unix - t.galexsec
+      np.float64(315964800.0)
+
+    In GALEX data, due to uncertainty in the spacecraft clock, the absolute time is only accurate to
+    about 1-10 seconds while the relative time within an observation is better than 0.005 s or so,
+    except on days with leap seconds, where relative times can be wrong by up to 1 s.
+    See question 101.2 in https://www.galex.caltech.edu/researcher/faq.html
+    """
+
+    name = "galexsec"
+    epoch_val = "1980-01-06 00:00:00"
+    _default_precision = 0
 
 
 class TimeGPS(TimeFromEpoch):
@@ -942,18 +974,19 @@ class TimeGPS(TimeFromEpoch):
 
 class TimePlotDate(TimeFromEpoch):
     """
-    Matplotlib `~matplotlib.pyplot.plot_date` input:
+    Input for a `~matplotlib.axes.Axes` object with ax.xaxis.axis_date():
     1 + number of days from 0001-01-01 00:00:00 UTC.
 
-    This can be used directly in the matplotlib `~matplotlib.pyplot.plot_date`
-    function::
+    This can be used as follow::
 
       >>> import matplotlib.pyplot as plt
       >>> jyear = np.linspace(2000, 2001, 20)
       >>> t = Time(jyear, format='jyear', scale='utc')
-      >>> plt.plot_date(t.plot_date, jyear)
-      >>> plt.gcf().autofmt_xdate()  # orient date labels at a slant
-      >>> plt.draw()
+      >>> fig, ax = plt.subplots()
+      >>> ax.xaxis.axis_date()
+      >>> ax.scatter(t.plot_date, jyear)
+      >>> fig.autofmt_xdate()  # orient date labels at a slant
+      >>> fig.show()
 
     For example, 730120.0003703703 is midnight on January 1, 2000.
     """
@@ -970,12 +1003,9 @@ class TimePlotDate(TimeFromEpoch):
     @lazyproperty
     def epoch(self):
         """Reference epoch time from which the time interval is measured."""
-        try:
+        if HAS_MATPLOTLIB:
             from matplotlib.dates import get_epoch
-        except ImportError:
-            # If matplotlib is not installed then the epoch is '0001-01-01'
-            _epoch = self._epoch
-        else:
+
             # Get the matplotlib date epoch as an ISOT string in UTC
             epoch_utc = get_epoch()
             from erfa import ErfaWarning
@@ -985,6 +1015,9 @@ class TimePlotDate(TimeFromEpoch):
                 warnings.filterwarnings("ignore", category=ErfaWarning)
                 _epoch = Time(epoch_utc, scale="utc", format="isot")
             _epoch.format = "jd"
+        else:
+            # If matplotlib is not installed then the epoch is '0001-01-01'
+            _epoch = self._epoch
 
         return _epoch
 
@@ -993,7 +1026,7 @@ class TimeStardate(TimeFromEpoch):
     """
     Stardate: date units from 2318-07-05 12:00:00 UTC.
     For example, stardate 41153.7 is 00:52 on April 30, 2363.
-    See http://trekguide.com/Stardates.htm#TNG for calculations and reference points.
+    See https://trekguide.com/Stardates.htm#TNG for calculations and reference points.
     """
 
     name = "stardate"
@@ -1029,7 +1062,7 @@ class TimeAstropyTime(TimeUnique):
         Use __new__ instead of __init__ to output a class instance that
         is the same as the class of the first Time object in the list.
         """
-        val1_0 = val1.flat[0]
+        val1_0 = val1.item(0)
         if not (
             isinstance(val1_0, Time)
             and all(type(val) is type(val1_0) for val in val1.flat)
@@ -1261,7 +1294,7 @@ class TimeYMDHMS(TimeUnique):
       >>> t.iso
       '2015-02-03 12:13:14.567'
       >>> t.ymdhms.year
-      2015
+      np.int32(2015)
     """
 
     name = "ymdhms"
@@ -1430,6 +1463,77 @@ class TimezoneInfo(datetime.tzinfo):
 
     def dst(self, dt):
         return self._dst
+
+
+# Cumulative number of days in the year before the first of each month, used to
+# turn a (year, month, day) date into a day-of-year without a Python loop.
+_DAYS_BEFORE_MONTH = np.array([0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334])
+
+# Matches a "{name:spec}" replacement field and an integer format spec such as
+# "d", "02d" or "+06d" within the subformat templates used by TimeString.
+_SUBFMT_FIELD = re.compile(r"\{(\w+):([^}]*)\}")
+_INT_SPEC = re.compile(r"([+\- ]?)(0?)(\d*)d")
+
+
+def _day_of_year(year, month, day):
+    """Day of year for proleptic Gregorian dates given as integer arrays.
+
+    Parameters
+    ----------
+    year : array_like of int
+        Full proleptic Gregorian year (e.g. 2000).
+    month : array_like of int
+        Month number, 1–12.
+    day : array_like of int
+        Day of month, 1–31.
+
+    Returns
+    -------
+    yday : ndarray of int
+        Day of year, 1–366.
+    """
+    leap = ((year % 4 == 0) & (year % 100 != 0)) | (year % 400 == 0)
+    return _DAYS_BEFORE_MONTH[month - 1] + day + ((month > 2) & leap)
+
+
+def _write_decimal(out, values, width, signed):
+    """Write the zero-padded decimal digits of ``values`` into ``out``.
+
+    ``out`` is a view into a code-point buffer with ``width`` columns along its
+    last axis. With ``signed`` the first column holds an explicit ``+``/``-``.
+
+    Writing the digits with plain integer arithmetic is deliberate: it is
+    several times faster than going through NumPy's string casts (e.g.
+    ``values.astype("U")`` or ``.astype("T")``), which format each element via
+    a Python string conversion.  See
+    https://github.com/numpy/numpy/blob/9721c24ba87e6323f29e0b2f4f73aa22574c2aef/numpy/_core/src/multiarray/stringdtype/casts.cpp#L871-L877
+    Please keep this in mind before "simplifying" to one of those.
+
+    Parameters
+    ----------
+    out : ndarray of uint32, shape (..., width)
+        Output buffer slice to write into. Modified in place.
+    values : array_like of int
+        Integer values to format. Must be non-negative when ``signed`` is
+        ``False``; negative values are supported when ``signed`` is ``True``.
+    width : int
+        Number of character columns to write. Must be wide enough to hold the
+        zero-padded digits (and sign column when ``signed`` is ``True``).
+    signed : bool
+        If ``True``, overwrite the first column with ``'+'`` or ``'-'``.
+    """
+    digits = np.asarray(values, dtype=np.int64)
+    if signed:
+        negative = digits < 0
+        digits = np.abs(digits)
+    for i in range(width - 1, -1, -1):
+        # Equivalent to ``digits % 10`` but a bit faster, since the floor
+        # division is reused instead of doing a second (costly) division.
+        by10 = digits // 10
+        out[..., i] = (digits - 10 * by10) + ord("0")
+        digits = by10
+    if signed:
+        out[..., 0] = np.where(negative, ord("-"), ord("+"))
 
 
 class TimeString(TimeUnique):
@@ -1690,6 +1794,140 @@ class TimeString(TimeUnique):
         """
         return str_fmt.format(**kwargs)
 
+    @staticmethod
+    def _field_width(spec, values):
+        """Fixed character width of an integer format ``spec`` over ``values``.
+
+        Returns ``(width, signed)``, or ``(None, None)`` when the field cannot
+        be built as a fixed-width column (e.g. a bare ``d`` whose values do not
+        all have the same number of digits), signalling that the caller should
+        fall back to formatting element by element.
+
+        Parameters
+        ----------
+        spec : str
+            The format spec portion of a ``{name:spec}`` replacement field,
+            e.g. ``"d"``, ``"02d"``, or ``"+06d"``.
+        values : ndarray of int
+            The integer values that will be formatted under this spec.
+
+        Returns
+        -------
+        width : int or None
+            Fixed character width of the field, or ``None`` if the field
+            cannot be rendered at a uniform width by this function.
+        signed : bool or None
+            ``True`` if the first character is an explicit ``'+'``/``'-'``
+            sign, ``False`` if the field is unsigned, or ``None`` when
+            ``width`` is ``None``.
+        """
+        match = _INT_SPEC.fullmatch(spec)
+        if match is None:
+            return None, None
+        sign, zero, digits = match.group(1, 2, 3)
+        if digits:
+            # We build columns by zero-padding, so a fixed width without the
+            # "0" flag (which pads with spaces) is left to the per-element path.
+            # And "real" formatting widens the field when a value does not fit,
+            # so a value needing more characters than ``width`` would be silently
+            # truncated in our fixed-width column; fall back in that (rare) case
+            # too -- e.g. a year past 9999 in the signed FITS ``{year:+06d}``.
+            width = int(digits)
+            signed = sign == "+"
+            fits = zero
+            if zero and values.size:
+                n_sign = 1 if signed or int(values.min()) < 0 else 0
+                fits = len(str(int(np.abs(values).max()))) + n_sign <= width
+            return (width, signed) if fits else (None, None)
+        # A bare "d" has no field width, so the width follows the values and we
+        # can only pre-size the column if they share a digit count and need no
+        # sign (a forced "+" or a negative value would make the width vary too).
+        if values.size == 0:
+            return 1, False
+        low = int(values.min())
+        lo = len(str(low))
+        hi = len(str(int(values.max())))
+        if sign or low < 0 or lo != hi:
+            return None, None
+        return hi, False
+
+    def _value_fast(self, str_fmt):
+        """Build the output strings for ``str_fmt`` with array operations.
+
+        Returns ``None`` if ``str_fmt`` has a field we cannot lay out at a fixed
+        width, leaving the caller to format the times one element at a time.
+
+        Parameters
+        ----------
+        str_fmt : str
+            Output template string containing ``{name:spec}`` replacement
+            fields, e.g. ``"{year:d}-{mon:02d}-{day:02d}"``.
+
+        Returns
+        -------
+        out : ndarray of str or None
+            Array of formatted time strings with the same shape as
+            ``self.jd1``, or ``None`` if any field in ``str_fmt`` cannot be
+            rendered at a fixed width (signalling the caller to fall back to
+            per-element formatting).
+        """
+        scale = (self.scale.upper().encode("ascii"),)
+        iys, ims, ids, ihmsfs = erfa.d2dtf(scale, self.precision, self.jd1, self.jd2)
+        # A masked Time gives MaskedNDArray components here; the mask is applied
+        # downstream, so we format the underlying integers (matching the
+        # per-element path, which iterates over the same underlying values).
+        fields = {
+            "year": np.asarray(iys),
+            "mon": np.asarray(ims),
+            "day": np.asarray(ids),
+            "hour": np.asarray(ihmsfs["h"]),
+            "min": np.asarray(ihmsfs["m"]),
+            "sec": np.asarray(ihmsfs["s"]),
+            "fracsec": np.asarray(ihmsfs["f"]),
+        }
+        if "{yday:" in str_fmt:
+            fields["yday"] = _day_of_year(fields["year"], fields["mon"], fields["day"])
+
+        # Split the template into literal text and replacement fields, recording
+        # the fixed width of each piece so the whole row fits one buffer.
+        pieces = []
+        width = 0
+        pos = 0
+        for match in _SUBFMT_FIELD.finditer(str_fmt):
+            if match.start() > pos:
+                literal = str_fmt[pos : match.start()]
+                pieces.append((literal, None, None))
+                width += len(literal)
+            name, spec = match.group(1, 2)
+            if name not in fields:
+                return None
+            field_width, signed = self._field_width(spec, fields[name])
+            if field_width is None:
+                return None
+            pieces.append((fields[name], field_width, signed))
+            width += field_width
+            pos = match.end()
+        if pos < len(str_fmt):
+            literal = str_fmt[pos:]
+            pieces.append((literal, None, None))
+            width += len(literal)
+
+        # Write each piece into its slice of a single code-point buffer, then
+        # reinterpret the rows as fixed-width unicode strings.
+        buf = np.empty(fields["year"].shape + (width,), dtype=np.uint32)
+        col = 0
+        for value, field_width, signed in pieces:
+            if field_width is None:  # literal text
+                buf[..., col : col + len(value)] = [ord(char) for char in value]
+                col += len(value)
+            else:
+                _write_decimal(
+                    buf[..., col : col + field_width], value, field_width, signed
+                )
+                col += field_width
+
+        return buf.view(f"U{width}").reshape(self.jd1.shape)
+
     @property
     def value(self):
         # Select the first available subformat based on current
@@ -1697,12 +1935,20 @@ class TimeString(TimeUnique):
         subfmts = self._select_subfmts(self.out_subfmt)
         _, _, str_fmt = subfmts[0]
 
-        # TODO: fix this ugly hack
+        # When seconds are present the fractional part is appended here rather
+        # than baked into the template, since its width follows self.precision.
         if self.precision > 0 and str_fmt.endswith("{sec:02d}"):
             str_fmt += ".{fracsec:0" + str(self.precision) + "d}"
 
-        # Try to optimize this later.  Can't pre-allocate because length of
-        # output could change, e.g. year rolls from 999 to 1000.
+        # Build the strings with array operations where we can. This falls back
+        # to per-element formatting for a custom format_string or any layout
+        # that is not a fixed-width run of integer fields (e.g. years that span
+        # different numbers of digits within one array).
+        if type(self).format_string is TimeString.format_string:
+            out = self._value_fast(str_fmt)
+            if out is not None:
+                return out
+
         outs = []
         for kwargs in self.str_kwargs():
             outs.append(str(self.format_string(str_fmt, **kwargs)))
@@ -2042,11 +2288,23 @@ class TimeEpochDate(TimeNumeric):
 
 
 class TimeBesselianEpoch(TimeEpochDate):
-    """Besselian Epoch year as value(s) like 1950.0.
+    """Besselian Epoch year as decimal value(s) like 1950.0.
 
-    Since for this format the length of the year varies, input needs to
-    be floating point; it is not possible to use Quantity input, for
-    which a year always equals 365.25 days.
+    For information about this epoch format, see:
+    `<https://en.wikipedia.org/wiki/Epoch_(astronomy)#Besselian_years>`_.
+
+    The astropy Time class uses the ERFA functions ``epb2jd`` and ``epb`` to convert
+    between Besselian epoch years and Julian dates. This is roughly equivalent to the
+    following formula (see the wikipedia page for the reference)::
+
+      B = 1900.0 + (Julian date - 2415020.31352) / 365.242198781
+
+    Since for this format the length of the year varies, input needs to be floating
+    point; it is not possible to use Quantity input, for which a year always equals
+    365.25 days.
+
+    The Besselian epoch year is used for expressing the epoch or equinox in older source
+    catalogs, but it has been largely replaced by the Julian epoch year.
     """
 
     name = "byear"
@@ -2060,7 +2318,32 @@ class TimeBesselianEpoch(TimeEpochDate):
 
 
 class TimeJulianEpoch(TimeEpochDate):
-    """Julian Epoch year as value(s) like 2000.0."""
+    """Julian epoch year as decimal value(s) like 2000.0.
+
+    This format is based the Julian year which is exactly 365.25 days/year and a day is
+    exactly 86400 SI seconds.
+
+    The Julian epoch year is defined so that 2000.0 is 12:00 TT on January 1, 2000.
+    Using astropy this is expressed as::
+
+      >>> from astropy.time import Time
+      >>> import astropy.units as u
+      >>> j2000_epoch = Time("2000-01-01T12:00:00", scale="tt")
+      >>> print(j2000_epoch.jyear)  # doctest: +FLOAT_CMP
+      2000.0
+      >>> print((j2000_epoch + 365.25 * u.day).jyear)  # doctest: +FLOAT_CMP
+      2001.0
+
+    The Julian year is commonly used in astronomy for expressing the epoch of a source
+    catalog or the time of an observation. The Julian epoch year is sometimes written as
+    a string like "J2001.5" with a preceding "J". You can initialize a ``Time`` object with
+    such a string::
+
+      >>> print(Time("J2001.5").jyear)  # doctest: +FLOAT_CMP
+      2001.5
+
+    See also: `<https://en.wikipedia.org/wiki/Julian_year_(astronomy)>`_.
+    """
 
     name = "jyear"
     unit = erfa.DJY  # 365.25, the Julian year, for conversion to quantities
@@ -2454,7 +2737,7 @@ def _validate_jd_for_storage(jd):
     if isinstance(jd, (float, int)):
         return np.array(jd, dtype=float)
     if isinstance(jd, np.generic) and (
-        jd.dtype.kind == "f" and jd.dtype.itemsize <= 8 or jd.dtype.kind in "iu"
+        (jd.dtype.kind == "f" and jd.dtype.itemsize <= 8) or jd.dtype.kind in "iu"
     ):
         return np.array(jd, dtype=float)
     elif isinstance(jd, np.ndarray) and jd.dtype.kind == "f" and jd.dtype.itemsize == 8:

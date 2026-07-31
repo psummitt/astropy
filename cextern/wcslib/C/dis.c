@@ -1,6 +1,6 @@
 /*============================================================================
-  WCSLIB 8.2 - an implementation of the FITS WCS standard.
-  Copyright (C) 1995-2023, Mark Calabretta
+  WCSLIB 8.9 - an implementation of the FITS WCS standard.
+  Copyright (C) 1995-2026, Mark Calabretta
 
   This file is part of WCSLIB.
 
@@ -18,22 +18,21 @@
   along with WCSLIB.  If not, see http://www.gnu.org/licenses.
 
   Author: Mark Calabretta, Australia Telescope National Facility, CSIRO.
-  http://www.atnf.csiro.au/people/Mark.Calabretta
-  $Id: dis.c,v 8.2.1.2 2023/11/29 07:43:49 mcalabre Exp mcalabre $
+  http://www.atnf.csiro.au/computing/software/wcs
+  $Id: dis.c,v 8.9 2026/06/18 13:00:03 mcalabre Exp $
 *===========================================================================*/
 
 #include <math.h>
 #include <stdio.h>
+#include <stddef.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "wcserr.h"
+#include "wcslimits.h"
 #include "wcsprintf.h"
 #include "wcsutil.h"
 #include "dis.h"
-
-// Maximum number of DPja or DQia keywords.
-int NDPMAX = 256;
 
 // Map status return value to message.
 const char *dis_errmsg[] = {
@@ -102,23 +101,23 @@ int dpfill(
       if (j && 2 <= strlen(keyword)) {
         // Fill in the axis number from the value given.
         if (keyword[2] == '\0') {
-          sprintf(dp->field, "%s%d.%s", keyword, j, field);
+          snprintf(dp->field, 72, "%s%d.%s", keyword, j, field);
         } else {
           // Take care not to overwrite any alternate code.
           char axno[8];
-          sprintf(dp->field, "%s.%s", keyword, field);
-          sprintf(axno, "%d", j);
+          snprintf(dp->field, 72, "%s.%s", keyword, field);
+          snprintf(axno, 8, "%d", j);
           dp->field[2] = axno[0];
         }
 
       } else {
-        sprintf(dp->field, "%s.%s", keyword, field);
+        snprintf(dp->field, 72, "%s.%s", keyword, field);
       }
     } else {
-      strcpy(dp->field, keyword);
+      strncpy(dp->field, keyword, 72);
     }
   } else if (field) {
-    strcpy(dp->field, field);
+    strncpy(dp->field, field, 72);
   }
 
   if (j) {
@@ -137,7 +136,7 @@ int dpfill(
     dp->value.i = i;
   }
 
-  return DISERR_SUCCESS;
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -219,9 +218,15 @@ int disinit(int alloc, int naxis, struct disprm *dis, int ndpmax)
     dis->m_maxdis = 0x0;
   }
 
+  // Sanity check on naxis.
   if (naxis < 0) {
-    return wcserr_set(WCSERR_SET(DISERR_MEMORY),
+    return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
       "naxis must not be negative (got %d)", naxis);
+  }
+
+  if (NAXMAX < naxis) {
+    return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
+      "naxis exceeds %d (got %d)", NAXMAX, naxis);
   }
 
 
@@ -299,7 +304,6 @@ int disinit(int alloc, int naxis, struct disprm *dis, int ndpmax)
 
 
   // Set defaults.
-  dis->flag  = 0;
   dis->naxis = naxis;
 
   if (naxis) {
@@ -316,7 +320,9 @@ int disinit(int alloc, int naxis, struct disprm *dis, int ndpmax)
     memset(dis->maxdis, 0, naxis*sizeof(double));
   }
 
-  return DISERR_SUCCESS;
+  dis->flag = 0;
+
+  return 0;
 }
 
 
@@ -345,12 +351,14 @@ int discpy(int alloc, const struct disprm *dissrc, struct disprm *disdst)
   memcpy(disdst->dtype, dissrc->dtype, naxis*sizeof(char [72]));
 
   disdst->ndp = dissrc->ndp;
-  memcpy(disdst->dp, dissrc->dp, dissrc->ndpmax*sizeof(struct dpkey));
+  if (disdst->dp) {
+    memcpy(disdst->dp, dissrc->dp, dissrc->ndpmax*sizeof(struct dpkey));
+  }
 
   disdst->totdis = dissrc->totdis;
   memcpy(disdst->maxdis, dissrc->maxdis, naxis*sizeof(double));
 
-  return DISERR_SUCCESS;
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -381,26 +389,26 @@ int disfree(struct disprm *dis)
     if (dis->offset && dis->offset[0]) free(dis->offset[0]);
     if (dis->scale  && dis->scale[0])  free(dis->scale[0]);
 
-    if (dis->axmap)  free(dis->axmap);
-    if (dis->offset) free(dis->offset);
-    if (dis->scale)  free(dis->scale);
+    if (dis->axmap)  free((void *)dis->axmap);
+    if (dis->offset) free((void *)dis->offset);
+    if (dis->scale)  free((void *)dis->scale);
 
     if (dis->iparm) {
       for (int j = 0; j < dis->i_naxis; j++) {
         if (dis->iparm[j]) free(dis->iparm[j]);
       }
-      free(dis->iparm);
+      free((void *)dis->iparm);
     }
 
     if (dis->dparm) {
       for (int j = 0; j < dis->i_naxis; j++) {
         if (dis->dparm[j]) free(dis->dparm[j]);
       }
-      free(dis->dparm);
+      free((void *)dis->dparm);
     }
 
-    if (dis->disp2x) free(dis->disp2x);
-    if (dis->disx2p) free(dis->disx2p);
+    if (dis->disp2x) free((void *)dis->disp2x);
+    if (dis->disx2p) free((void *)dis->disx2p);
   }
 
   dis->m_flag   = 0;
@@ -423,7 +431,7 @@ int disfree(struct disprm *dis)
 
   dis->flag = 0;
 
-  return DISERR_SUCCESS;
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -437,7 +445,7 @@ int dissize(const struct disprm *dis, int sizes[2])
   }
 
   // Base size, in bytes.
-  sizes[0] = sizeof(struct disprm);
+  sizes[0] = (int)sizeof(struct disprm);
 
   // Total size of allocated memory, in bytes.
   sizes[1] = 0;
@@ -445,13 +453,13 @@ int dissize(const struct disprm *dis, int sizes[2])
   int naxis = dis->naxis;
 
   // disprm::dtype[].
-  sizes[1] += naxis * sizeof(char [72]);
+  sizes[1] += naxis * (int)sizeof(char [72]);
 
   // disprm::dp[].
-  sizes[1] += dis->ndpmax * sizeof(struct dpkey);
+  sizes[1] += dis->ndpmax * (int)sizeof(struct dpkey);
 
   // disprm::maxdis[].
-  sizes[1] += naxis * sizeof(double);
+  sizes[1] += naxis * (int)sizeof(double);
 
   // dis::err[].
   int exsizes[2];
@@ -459,51 +467,79 @@ int dissize(const struct disprm *dis, int sizes[2])
   sizes[1] += exsizes[0] + exsizes[1];
 
   // The remaining arrays are allocated by disset().
-  if (dis->flag != DISSET) {
-    return DISERR_SUCCESS;
+  if (abs(dis->flag) != DISSET) {
+    return 0;
   }
 
   // dis::docorr[].
-  sizes[1] += naxis * sizeof(int *);
+  sizes[1] += naxis * (int)sizeof(int *);
 
   // dis::Nhat[].
-  sizes[1] += naxis * sizeof(int *);
+  sizes[1] += naxis * (int)sizeof(int *);
 
   // dis::axmap[][].
-  sizes[1] += naxis * sizeof(int *);
-  sizes[1] += naxis*naxis * sizeof(int);
+  sizes[1] += naxis * (int)sizeof(int *);
+  sizes[1] += naxis*naxis * (int)sizeof(int);
 
   // dis::offset[][].
-  sizes[1] += naxis * sizeof(double *);
-  sizes[1] += naxis*naxis * sizeof(double);
+  sizes[1] += naxis * (int)sizeof(double *);
+  sizes[1] += naxis*naxis * (int)sizeof(double);
 
   // dis::scale[][].
-  sizes[1] += naxis * sizeof(double *);
-  sizes[1] += naxis*naxis * sizeof(double);
+  sizes[1] += naxis * (int)sizeof(double *);
+  sizes[1] += naxis*naxis * (int)sizeof(double);
 
   // dis::iparm[][].
-  sizes[1] += naxis * sizeof(int *);
+  sizes[1] += naxis * (int)sizeof(int *);
   for (int j = 0; j < naxis; j++) {
     if (dis->iparm[j]) {
-      sizes[1] += dis->iparm[j][I_NIPARM] * sizeof(int);
+      sizes[1] += dis->iparm[j][I_NIPARM] * (int)sizeof(int);
     }
   }
 
   // dis::dparm[][].
-  sizes[1] += naxis * sizeof(double *);
+  sizes[1] += naxis * (int)sizeof(double *);
   for (int j = 0; j < naxis; j++) {
     if (dis->dparm[j]) {
-      sizes[1] += dis->dparm[j][I_NDPARM] * sizeof(double);
+      sizes[1] += (int)dis->dparm[j][I_NDPARM] * (int)sizeof(double);
     }
   }
 
   // dis::disp2x[].
-  sizes[1] += naxis * sizeof(int (*)(DISP2X_ARGS));
+  sizes[1] += naxis * (int)sizeof(int (*)(DISP2X_ARGS));
 
   // dis::disx2p[].
-  sizes[1] += naxis * sizeof(int (*)(DISX2P_ARGS));
+  sizes[1] += naxis * (int)sizeof(int (*)(DISX2P_ARGS));
 
-  return DISERR_SUCCESS;
+  return 0;
+}
+
+//----------------------------------------------------------------------------
+
+int disenq(const struct disprm *dis, int enquiry)
+
+{
+  // Initialize.
+  if (dis == 0x0) return DISERR_NULL_POINTER;
+
+  int answer = 0;
+
+  if (enquiry & DISENQ_MEM) {
+    if (dis->m_flag != DISSET) return 0;
+    answer = 1;
+  }
+
+  if (enquiry & DISENQ_SET) {
+    if (abs(dis->flag) != DISSET) return 0;
+    answer = 1;
+  }
+
+  if (enquiry & DISENQ_BYP) {
+    if (dis->flag != 1 && dis->flag != -DISSET) return 0;
+    answer = 1;
+  }
+
+  return answer;
 }
 
 //----------------------------------------------------------------------------
@@ -513,17 +549,16 @@ int disprt(const struct disprm *dis)
 {
   if (dis == 0x0) return DISERR_NULL_POINTER;
 
-  if (dis->flag != DISSET) {
+  if (abs(dis->flag) != DISSET) {
     wcsprintf("The disprm struct is UNINITIALIZED.\n");
-    return DISERR_SUCCESS;
+    return 0;
   }
 
   int naxis = dis->naxis;
 
 
-  wcsprintf("       flag: %d\n", dis->flag);
-
   // Parameters supplied.
+  wcsprintf("       flag: %d\n", dis->flag);
   wcsprintf("      naxis: %d\n", naxis);
 
   WCSPRINTF_PTR("      dtype: ", dis->dtype, "\n");
@@ -638,7 +673,7 @@ int disprt(const struct disprm *dis)
     wcserr_prt(dis->err, "             ");
   }
 
-  // Work arrays.
+  // Pointers to distortion functions.
   char hext[32];
   WCSPRINTF_PTR("     disp2x: ", dis->disp2x, "\n");
   for (int j = 0; j < naxis; j++) {
@@ -668,6 +703,8 @@ int disprt(const struct disprm *dis)
       wcsprintf("\n");
     }
   }
+
+  // Pointers to inverse distortion functions.
   WCSPRINTF_PTR("     disx2p: ", dis->disx2p, "\n");
   for (int j = 0; j < naxis; j++) {
     wcsprintf("  disx2p[%d]: %s\n", j,
@@ -687,7 +724,7 @@ int disprt(const struct disprm *dis)
   if (dis->m_maxdis == dis->maxdis) wcsprintf("  (= maxdis)");
   wcsprintf("\n");
 
-  return DISERR_SUCCESS;
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -701,7 +738,7 @@ int disperr(const struct disprm *dis, const char *prefix)
     wcserr_prt(dis->err, prefix);
   }
 
-  return DISERR_SUCCESS;
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -742,10 +779,8 @@ int disset(struct disprm *dis)
   static const char *function = "disset";
 
   if (dis == 0x0) return DISERR_NULL_POINTER;
+  if (dis->flag == -DISSET) return 0;
   struct wcserr **err = &(dis->err);
-
-  int naxis = dis->naxis;
-
 
   // Do basic checks.
   if (dis->ndp < 0) {
@@ -753,7 +788,8 @@ int disset(struct disprm *dis)
       "disprm::ndp is negative (%d)", dis->ndp);
   }
 
-  int ndis = 0;
+  int naxis = dis->naxis;
+  int ndis  = 0;
   for (int j = 0; j < naxis; j++) {
     if (strlen(dis->dtype[j])) {
       ndis++;
@@ -796,43 +832,57 @@ int disset(struct disprm *dis)
 
   // Allocate or reallocate memory, if necessary, for derived parameter and
   // work arrays sized according to the number of axes.
+  size_t naxszt = naxis;
   if (dis->i_naxis < naxis) {
     if (dis->i_naxis) {
       free(dis->docorr);
       free(dis->Nhat);
 
+      dis->docorr = 0x0;
+      dis->Nhat   = 0x0;
+
       // Noting that axmap, offset, and scale are allocated in bulk.
       free(dis->axmap[0]);
-      free(dis->axmap);
+      free((void *)dis->axmap);
       free(dis->offset[0]);
-      free(dis->offset);
+      free((void *)dis->offset);
       free(dis->scale[0]);
-      free(dis->scale);
+      free((void *)dis->scale);
 
-      free(dis->iparm);
-      free(dis->dparm);
+      dis->axmap  = 0x0;
+      dis->offset = 0x0;
+      dis->scale  = 0x0;
 
-      free(dis->disp2x);
-      free(dis->disx2p);
+      free((void *)dis->iparm);
+      free((void *)dis->dparm);
+
+      dis->iparm  = 0x0;
+      dis->dparm  = 0x0;
+
+      free((void *)dis->disp2x);
+      free((void *)dis->disx2p);
+
+      dis->disp2x = 0x0;
+      dis->disx2p = 0x0;
     }
 
-    if ((dis->docorr = calloc(naxis, sizeof(int *))) == 0x0) {
+    if ((dis->docorr = calloc(naxszt, sizeof(int))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
-    if ((dis->Nhat = calloc(naxis, sizeof(int *))) == 0x0) {
+    if ((dis->Nhat = calloc(naxszt, sizeof(int))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
     // Allocate axmap[][] in bulk and then carve it up.
-    if ((dis->axmap = calloc(naxis, sizeof(int *))) == 0x0) {
+    if ((dis->axmap = (int **)calloc(naxszt, sizeof(int *))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
-    if ((dis->axmap[0] = calloc(naxis*naxis, sizeof(int))) == 0x0) {
+    if ((dis->axmap[0] = calloc(naxszt*naxszt, sizeof(int))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
@@ -842,12 +892,12 @@ int disset(struct disprm *dis)
     }
 
     // Allocate offset[][] in bulk and then carve it up.
-    if ((dis->offset = calloc(naxis, sizeof(double *))) == 0x0) {
+    if ((dis->offset = (double **)calloc(naxszt, sizeof(double *))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
-    if ((dis->offset[0] = calloc(naxis*naxis, sizeof(double))) == 0x0) {
+    if ((dis->offset[0] = calloc(naxszt*naxszt, sizeof(double))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
@@ -857,12 +907,12 @@ int disset(struct disprm *dis)
     }
 
     // Allocate scale[][] in bulk and then carve it up.
-    if ((dis->scale = calloc(naxis, sizeof(double *))) == 0x0) {
+    if ((dis->scale = (double **)calloc(naxszt, sizeof(double *))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
-    if ((dis->scale[0] = calloc(naxis*naxis, sizeof(double))) == 0x0) {
+    if ((dis->scale[0] = calloc(naxszt*naxszt, sizeof(double))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
@@ -871,22 +921,24 @@ int disset(struct disprm *dis)
       dis->scale[j] = dis->scale[j-1] + naxis;
     }
 
-    if ((dis->iparm = calloc(naxis, sizeof(int *))) == 0x0) {
+    if ((dis->iparm = (int **)calloc(naxszt, sizeof(int *))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
-    if ((dis->dparm = calloc(naxis, sizeof(double *))) == 0x0) {
+    if ((dis->dparm = (double **)calloc(naxszt, sizeof(double *))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
-    if ((dis->disp2x = calloc(naxis, sizeof(int (*)(DISP2X_ARGS)))) == 0x0) {
+    if ((dis->disp2x = (int (**)(DISP2X_ARGS))calloc(naxszt,
+           sizeof(int (*)(DISP2X_ARGS)))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
 
-    if ((dis->disx2p = calloc(naxis, sizeof(int (*)(DISX2P_ARGS)))) == 0x0) {
+    if ((dis->disx2p = (int (**)(DISX2P_ARGS))calloc(naxszt,
+           sizeof(int (*)(DISX2P_ARGS)))) == 0x0) {
       disfree(dis);
       return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     }
@@ -899,13 +951,13 @@ int disset(struct disprm *dis)
     dis->docorr[j] = 1;
   }
 
-  memset(dis->Nhat, 0, naxis*sizeof(int));
+  memset(dis->Nhat, 0, naxszt*sizeof(int));
 
   for (int jhat = 0; jhat < naxis*naxis; jhat++) {
     dis->axmap[0][jhat] = -1;
   }
 
-  memset(dis->offset[0], 0, naxis*naxis*sizeof(double));
+  memset(dis->offset[0], 0, naxszt*naxszt*sizeof(double));
 
   for (int jhat = 0; jhat < naxis*naxis; jhat++) {
     dis->scale[0][jhat] = 1.0;
@@ -916,8 +968,8 @@ int disset(struct disprm *dis)
   dis->i_naxis = naxis;
   dis->ndis    = 0;
 
-  memset(dis->disp2x, 0, naxis*sizeof(int (*)(DISP2X_ARGS)));
-  memset(dis->disx2p, 0, naxis*sizeof(int (*)(DISX2P_ARGS)));
+  memset((void *)dis->disp2x, 0, naxis*sizeof(int (*)(DISP2X_ARGS)));
+  memset((void *)dis->disx2p, 0, naxis*sizeof(int (*)(DISX2P_ARGS)));
 
 
   // Handle DPja or DQia keywords common to all distortions.
@@ -946,12 +998,12 @@ int disset(struct disprm *dis)
     // Convert to 0-relative axis number.
     j--;
 
-    if (strncmp(fp, "DOCORR", 7) == 0) {
+    if (strcmp(fp, "DOCORR") == 0) {
       if (dpkeyi(keyp) == 0) {
         dis->docorr[j] = 0;
       }
 
-    } else if (strncmp(fp, "NAXES", 6) == 0) {
+    } else if (strcmp(fp, "NAXES") == 0) {
       int Nhat = dpkeyi(keyp);
       if (Nhat < 0 || naxis < Nhat) {
         return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
@@ -1108,9 +1160,10 @@ int disset(struct disprm *dis)
   }
 
   dis->ndis = ndis;
-  dis->flag = DISSET;
 
-  return DISERR_SUCCESS;
+  dis->flag = (dis->flag == 1) ? -DISSET : DISSET;
+
+  return 0;
 }
 
 //----------------------------------------------------------------------------
@@ -1127,8 +1180,8 @@ int disp2x(
   if (dis == 0x0) return DISERR_NULL_POINTER;
   struct wcserr **err = &(dis->err);
 
-  int status = DISERR_SUCCESS;
-  if (dis->flag != DISSET) {
+  int status = 0;
+  if (abs(dis->flag) != DISSET) {
     if ((status = disset(dis))) return status;
   }
 
@@ -1210,15 +1263,15 @@ int disx2p(
   if (dis == 0x0) return DISERR_NULL_POINTER;
   struct wcserr **err = &(dis->err);
 
-  int status = DISERR_SUCCESS;
-  if (dis->flag != DISSET) {
+  int status = 0;
+  if (abs(dis->flag) != DISSET) {
     if ((status = disset(dis))) return status;
   }
 
   int naxis = dis->naxis;
 
   double *tmpmem;
-  if ((tmpmem = calloc(5*naxis, sizeof(double))) == 0x0) {
+  if ((tmpmem = calloc(5*(size_t)naxis, sizeof(double))) == 0x0) {
     status = wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     goto cleanup;
   }
@@ -1276,7 +1329,7 @@ int disx2p(
 
 
   // Iteratively invert the (well-behaved!) distortion function.
-  int convergence, iter;
+  int convergence = 0, iter;
   for (iter = 0; iter < itermax; iter++) {
     if ((status = disp2x(dis, rawcrd, dcrd0))) {
       wcserr_set(DIS_ERRMSG(status));
@@ -1427,10 +1480,10 @@ int diswarp(
   if (rmstot) *rmstot = 0.0;
 
   // Quick return if no distortions.
-  if (dis->ndis == 0) return DISERR_SUCCESS;
+  if (dis->ndis == 0) return 0;
 
   double *tmpmem;
-  if ((tmpmem = calloc(4*naxis, sizeof(double))) == 0x0) {
+  if ((tmpmem = calloc(4*(size_t)naxis, sizeof(double))) == 0x0) {
     status = wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     goto cleanup;
   }
@@ -1447,20 +1500,22 @@ int diswarp(
 
     if (pixsamp == 0x0) {
       pixinc[j] = 1.0;
-    } else if (pixsamp[j] == 0.0) {
-      pixinc[j] = 1.0;
-    } else if (pixsamp[j] > 0.0) {
-      pixinc[j] = pixsamp[j];
-    } else if (pixsamp[j] > -1.5) {
-      pixinc[j] = 2.0*pixspan;
     } else {
-      pixinc[j] = pixspan / ((int)(-pixsamp[j] - 0.5));
+      if (pixsamp[j] == 0.0) {
+        pixinc[j] = 1.0;
+      } else if (pixsamp[j] > 0.0) {
+        pixinc[j] = pixsamp[j];
+      } else if (pixsamp[j] > -1.5) {
+        pixinc[j] = 2.0*pixspan;
+      } else {
+        pixinc[j] = pixspan / ((int)(-pixsamp[j] - 0.5));
+      }
     }
   }
 
   // Get some more memory for coordinate vectors.
   double *pix0, *pix1;
-  if ((pix0 = calloc(2*naxis, sizeof(double))) == 0x0) {
+  if ((pix0 = calloc(2*(size_t)naxis, sizeof(double))) == 0x0) {
     status = wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
     goto cleanup;
   }
@@ -1484,7 +1539,7 @@ int diswarp(
 
 
   // Loop over N dimensions.
-  int carry = 0;
+  int carry = 0, count = 0;
   while (carry == 0) {
     if ((status = disp2x(dis, pix0, pix1))) {
       // (Preserve the error message set by disp2x().)
@@ -1492,7 +1547,7 @@ int diswarp(
     }
 
     // Accumulate statistics.
-    (*nsamp)++;
+    count++;
 
     double dssq = 0.0;
     for (int j = 0; j < naxis; j++) {
@@ -1532,15 +1587,17 @@ int diswarp(
 
 
   // Compute the means and RMSs.
+  if (nsamp) *nsamp = count;
+
   for (int j = 0; j < naxis; j++) {
-    ssqdis[j] /= *nsamp;
-    sumdis[j] /= *nsamp;
+    ssqdis[j] /= count;
+    sumdis[j] /= count;
     if (avgdis) avgdis[j] = sumdis[j];
     if (rmsdis) rmsdis[j] = sqrt(ssqdis[j] - sumdis[j]*sumdis[j]);
   }
 
-  ssqtot /= *nsamp;
-  sumtot /= *nsamp;
+  ssqtot /= count;
+  sumtot /= count;
   if (avgtot) *avgtot = sumtot;
   if (rmstot) *rmstot = sqrt(ssqtot - sumtot*sumtot);
 
@@ -1556,7 +1613,7 @@ cleanup:
 
 //----------------------------------------------------------------------------
 
-int polyset(int j, struct disprm *dis)
+static int polyset(int j, struct disprm *dis)
 
 {
   static const char *function = "polyset";
@@ -1567,8 +1624,8 @@ int polyset(int j, struct disprm *dis)
 
   int naxis = dis->naxis;
 
-  char   id[32];
-  sprintf(id, "Polynomial on axis %d", j+1);
+  char id[32];
+  snprintf(id, 32, "Polynomial on axis %d", j+1);
 
 
   // Find the number of auxiliary variables and terms.
@@ -1783,13 +1840,13 @@ int polyset(int j, struct disprm *dis)
           "Unrecognized field name for %s: %s", id, keyp->field);
       }
 
-    } else if (strcmp(fp, "DOCORR") &&
-               strcmp(fp, "NAXES")  &&
-              strncmp(fp, "AXIS.",   5) &&
-              strncmp(fp, "OFFSET.", 7) &&
-              strncmp(fp, "SCALE.",  6) &&
-               strcmp(fp, "NAUX")   &&
-               strcmp(fp, "NTERMS")) {
+    } else if (strcmp(fp, "DOCORR") != 0 &&
+               strcmp(fp, "NAXES")  != 0 &&
+              strncmp(fp, "AXIS.",   5) != 0 &&
+              strncmp(fp, "OFFSET.", 7) != 0 &&
+              strncmp(fp, "SCALE.",  6) != 0 &&
+               strcmp(fp, "NAUX")   != 0 &&
+               strcmp(fp, "NTERMS") != 0) {
       return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
         "Unrecognized field name for %s: %s", id, keyp->field);
     }
@@ -1874,7 +1931,7 @@ int polyset(int j, struct disprm *dis)
 
 //----------------------------------------------------------------------------
 
-int tpdset(int j, struct disprm *dis)
+static int tpdset(int j, struct disprm *dis)
 
 {
   static const char *function = "tpdset";
@@ -1883,7 +1940,7 @@ int tpdset(int j, struct disprm *dis)
   struct wcserr **err = &(dis->err);
 
   char id[32];
-  sprintf(id, "TPD on axis %d", j+1);
+  snprintf(id, 32, "TPD on axis %d", j+1);
 
 
   // TPD distortion.
@@ -1937,11 +1994,11 @@ int tpdset(int j, struct disprm *dis)
       // Flag usage of auxiliary variables.
       doaux = 1;
 
-    } else if (strcmp(fp, "DOCORR") &&
-               strcmp(fp, "NAXES")  &&
-              strncmp(fp, "AXIS.",   5) &&
-              strncmp(fp, "OFFSET.", 7) &&
-              strncmp(fp, "SCALE.",  6)) {
+    } else if (strcmp(fp, "DOCORR") != 0 &&
+               strcmp(fp, "NAXES")  != 0 &&
+              strncmp(fp, "AXIS.",   5) != 0 &&
+              strncmp(fp, "OFFSET.", 7) != 0 &&
+              strncmp(fp, "SCALE.",  6) != 0) {
       return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
         "Unrecognized field name for %s: %s", id, keyp->field);
     }
@@ -2100,7 +2157,7 @@ int tpdset(int j, struct disprm *dis)
 
 //----------------------------------------------------------------------------
 
-int pol2tpd(int j, struct disprm *dis)
+static int pol2tpd(int j, struct disprm *dis)
 
 {
   static const char *function = "pol2tpd";
@@ -2171,6 +2228,7 @@ int pol2tpd(int j, struct disprm *dis)
 
         // Can't have even powers of the radial variable.
         deg = *ipowp;
+        if (9 < deg)    return -1;
         if (!(deg%2))   return -1;
       }
       iflgp++;
@@ -2210,6 +2268,9 @@ int pol2tpd(int j, struct disprm *dis)
   } else if (degree == 9) {
     ndparm = 60;
     dis->disp2x[j] = tpd9;
+  } else {
+    // Can't happen; this is just to appease clang-tidy.
+    return -1;
   }
 
   // No specialist de-distortions.
@@ -2241,6 +2302,7 @@ int pol2tpd(int j, struct disprm *dis)
   // Allocate memory for the polynomial coefficients and fill it.
   double *tpd_dparm;
   if ((tpd_dparm = calloc(ndparm, sizeof(double))) == 0x0) {
+    free(tpd_iparm);
     return wcserr_set(DIS_ERRMSG(DISERR_MEMORY));
   }
 
@@ -2264,6 +2326,9 @@ int pol2tpd(int j, struct disprm *dis)
         break;
       case 9:
         tpd_dparm[59] = *dpolp;
+        break;
+      default:
+        // Nothing.
         break;
       }
 
@@ -2295,7 +2360,7 @@ int pol2tpd(int j, struct disprm *dis)
 
 //----------------------------------------------------------------------------
 
-int tpvset(int j, struct disprm *dis)
+static int tpvset(int j, struct disprm *dis)
 
 {
   static const char *function = "tpvset";
@@ -2306,7 +2371,7 @@ int tpvset(int j, struct disprm *dis)
 
   // TPV "projection".
   char id[32];
-  sprintf(id, "TPV on axis %d", j+1);
+  snprintf(id, 32, "TPV on axis %d", j+1);
 
   // TPV is a sequent distortion, applied to intermediate world coordinates
   // (normally used with CDi_ja).  It computes corrected coordinates directly.
@@ -2342,10 +2407,10 @@ int tpvset(int j, struct disprm *dis)
           "Invalid parameter number (%d) for %s: %s", k, id, keyp->field);
       }
 
-    } else if (strcmp(fp, "NAXES")  &&
-              strncmp(fp, "AXIS.",   5) &&
-              strncmp(fp, "OFFSET.", 7) &&
-              strncmp(fp, "SCALE.",  6)) {
+    } else if (strcmp(fp, "NAXES") != 0 &&
+              strncmp(fp, "AXIS.",   5) != 0 &&
+              strncmp(fp, "OFFSET.", 7) != 0 &&
+              strncmp(fp, "SCALE.",  6) != 0) {
       return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
         "Unrecognized field name for %s: %s", id, keyp->field);
     }
@@ -2435,7 +2500,7 @@ int tpvset(int j, struct disprm *dis)
 
 //----------------------------------------------------------------------------
 
-int sipset(int j, struct disprm *dis)
+static int sipset(int j, struct disprm *dis)
 
 {
   static const char *function = "sipset";
@@ -2457,7 +2522,7 @@ int sipset(int j, struct disprm *dis)
 
   // Simple Imaging Polynomial.
   char id[32];
-  sprintf(id, "SIP on axis %d", j+1);
+  snprintf(id, 32, "SIP on axis %d", j+1);
 
 
   // SIP is a prior distortion that computes an additive correction.
@@ -2502,10 +2567,10 @@ int sipset(int j, struct disprm *dis)
 
       if (degree[idis] < deg) degree[idis] = deg;
 
-    } else if (strcmp(fp, "NAXES")  &&
-              strncmp(fp, "AXIS.",   5) &&
-              strncmp(fp, "OFFSET.", 7) &&
-              strncmp(fp, "SCALE.",  6)) {
+    } else if (strcmp(fp, "NAXES") != 0 &&
+              strncmp(fp, "AXIS.",   5) != 0 &&
+              strncmp(fp, "OFFSET.", 7) != 0 &&
+              strncmp(fp, "SCALE.",  6) != 0) {
       return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
         "Unrecognized field name for %s: %s", id, keyp->field);
     }
@@ -2544,6 +2609,10 @@ int sipset(int j, struct disprm *dis)
     } else if (degree[idis] == 9) {
       ncoeff[idis] = 60;
       distpd[idis] = tpd9;
+    } else {
+      // Can't happen; this is just to appease clang-tidy.
+      return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
+        "Degree must not exceed 9, got %d", degree[idis]);
     }
   }
 
@@ -2613,7 +2682,7 @@ int sipset(int j, struct disprm *dis)
 
 //----------------------------------------------------------------------------
 
-int dssset(int j, struct disprm *dis)
+static int dssset(int j, struct disprm *dis)
 
 {
   static const char *function = "dssset";
@@ -2624,7 +2693,7 @@ int dssset(int j, struct disprm *dis)
 
   // Digitized Sky Survey.
   char id[32];
-  sprintf(id, "DSS on axis %d", j+1);
+  snprintf(id, 32, "DSS on axis %d", j+1);
 
 
   // DSS is translated into a sequent distortion, applied to intermediate
@@ -2796,10 +2865,10 @@ int dssset(int j, struct disprm *dis)
         "Invalid parameter for %s: %s", m, id, keyp->field);
       }
 
-    } else if (strcmp(fp, "NAXES")  &&
-              strncmp(fp, "AXIS.",   5) &&
-              strncmp(fp, "OFFSET.", 7) &&
-              strncmp(fp, "SCALE.",  6)) {
+    } else if (strcmp(fp, "NAXES") != 0 &&
+              strncmp(fp, "AXIS.",   5) != 0 &&
+              strncmp(fp, "OFFSET.", 7) != 0 &&
+              strncmp(fp, "SCALE.",  6) != 0) {
       return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
         "Unrecognized field name for %s: %s", id, keyp->field);
     }
@@ -2821,7 +2890,7 @@ int dssset(int j, struct disprm *dis)
 #define LEGENDRE  2
 #define MONOMIAL  3
 
-int watset(int j, struct disprm *dis)
+static int watset(int j, struct disprm *dis)
 
 {
   static const char *function = "watset";
@@ -2843,7 +2912,7 @@ int watset(int j, struct disprm *dis)
 
   // WAT (TNX or ZPX) Polynomial.
   char id[32];
-  sprintf(id, "WAT (%s) on axis %d", dis->dtype[0]+4, j+1);
+  snprintf(id, 32, "WAT (%s) on axis %d", dis->dtype[0]+4, j+1);
 
 
   // WAT is a sequent distortion, applied to intermediate world coordinates
@@ -2901,10 +2970,10 @@ int watset(int j, struct disprm *dis)
         ymax = dpkeyd(keyp);
       }
 
-    } else if (strcmp(fp, "NAXES")  &&
-              strncmp(fp, "AXIS.",   5) &&
-              strncmp(fp, "OFFSET.", 7) &&
-              strncmp(fp, "SCALE.",  6)) {
+    } else if (strcmp(fp, "NAXES") != 0 &&
+              strncmp(fp, "AXIS.",   5) != 0 &&
+              strncmp(fp, "OFFSET.", 7) != 0 &&
+              strncmp(fp, "SCALE.",  6) != 0) {
       return wcserr_set(WCSERR_SET(DISERR_BAD_PARAM),
         "Unrecognized field name for %s: %s", id, keyp->field);
     }
@@ -3043,8 +3112,12 @@ int watset(int j, struct disprm *dis)
         // polynomials.  Find the corresponding monomial coefficients.
         double coeff = dpkeyd(keyp);
 
+        int status;
         double coeffm[10], coeffn[10];
-        cheleg(kind, m, n, coeffm, coeffn);
+        if ((status = cheleg(kind, m, n, coeffm, coeffn))) {
+          return wcserr_set(DIS_ERRMSG(status));
+        }
+
         for (int im = 0; im <= m; im++) {
           if (coeffm[im] == 0.0) continue;
 
@@ -3066,19 +3139,25 @@ int watset(int j, struct disprm *dis)
 // Compute the coefficients of Chebyshev or Legendre polynomials of degree
 // m and n.
 
-int cheleg(int kind, int m, int n, double coeffm[], double coeffn[])
+static int cheleg(int kind, int m, int n, double coeffm[], double coeffn[])
 
 {
-  int N = (m > n) ? m : n;
+  int N = (n < m) ? m : n;
+  if (N < 0) {
+    return DISERR_BAD_PARAM;
+  }
 
   // Allocate work arrays.
-  double *coeff[3];
-  coeff[0] = calloc(3*(N+1), sizeof(double));
+  double *coeff[3], *dp;
+  if ((dp = calloc(3*(size_t)(N+1), sizeof(double))) == 0x0) {
+    return DISERR_MEMORY;
+  }
+  coeff[0] = dp;
   coeff[1] = coeff[0] + (N+1);
   coeff[2] = coeff[1] + (N+1);
 
   for (int j = 0; j <= N; j++) {
-    int j0 =  j%3;
+    int j0 = j%3;
 
     if (j == 0) {
       coeff[0][0] = 1.0;
@@ -3109,14 +3188,14 @@ int cheleg(int kind, int m, int n, double coeffm[], double coeffn[])
     if (j == n) memcpy(coeffn, coeff[j0], (n+1)*sizeof(double));
   }
 
-  free(coeff[0]);
+  free(dp);
 
   return 0;
 }
 
 //----------------------------------------------------------------------------
 
-int dispoly(
+static int dispoly(
   int dummy,
   const int iparm[],
   const double dparm[],
@@ -3141,11 +3220,11 @@ int dispoly(
 
   // Compute the auxiliary variables.
   for (int k = 0; k < iparm[I_K]; k++) {
-    const double *cptr = dparm + k*iparm[I_NKPARM];
-    const double *pptr = cptr + (1+Nhat);
+    const double *cptr = dparm + (ptrdiff_t)(k*iparm[I_NKPARM]);
+    const double *pptr = cptr  + (ptrdiff_t)(1+Nhat);
 
     aux[k] = *(cptr++);
-    double auxp0  = *(pptr++);
+    double auxp0 = *(pptr++);
 
     for (int jhat = 0; jhat < Nhat; jhat++) {
       aux[k] += *(cptr++)*pow(rawcrd[jhat], *(pptr++));
@@ -3229,7 +3308,7 @@ int dispoly(
 
 //----------------------------------------------------------------------------
 
-int tpd1(
+static int tpd1(
   int inverse,
   const int i[],
   const double p[],
@@ -3276,7 +3355,7 @@ int tpd1(
 
 //----------------------------------------------------------------------------
 
-int tpd2(
+static int tpd2(
   int inverse,
   const int i[],
   const double p[],
@@ -3325,7 +3404,7 @@ int tpd2(
 
 //----------------------------------------------------------------------------
 
-int tpd3(
+static int tpd3(
   int inverse,
   const int i[],
   const double p[],
@@ -3375,7 +3454,7 @@ int tpd3(
 
 //----------------------------------------------------------------------------
 
-int tpd4(
+static int tpd4(
   int inverse,
   const int i[],
   const double p[],
@@ -3426,7 +3505,7 @@ int tpd4(
 
 //----------------------------------------------------------------------------
 
-int tpd5(
+static int tpd5(
   int inverse,
   const int i[],
   const double p[],
@@ -3478,7 +3557,7 @@ int tpd5(
 
 //----------------------------------------------------------------------------
 
-int tpd6(
+static int tpd6(
   int inverse,
   const int i[],
   const double p[],
@@ -3531,7 +3610,7 @@ int tpd6(
 
 //----------------------------------------------------------------------------
 
-int tpd7(
+static int tpd7(
   int inverse,
   const int i[],
   const double p[],
@@ -3585,7 +3664,7 @@ int tpd7(
 
 //----------------------------------------------------------------------------
 
-int tpd8(
+static int tpd8(
   int inverse,
   const int i[],
   const double p[],
@@ -3640,7 +3719,7 @@ int tpd8(
 
 //----------------------------------------------------------------------------
 
-int tpd9(
+static int tpd9(
   int inverse,
   const int i[],
   const double p[],

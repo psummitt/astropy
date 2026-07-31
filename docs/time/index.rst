@@ -200,8 +200,10 @@ byear        :class:`~astropy.time.TimeBesselianEpoch`          1950.0
 byear_str    :class:`~astropy.time.TimeBesselianEpochString`    'B1950.0'
 cxcsec       :class:`~astropy.time.TimeCxcSec`                  63072064.184
 datetime     :class:`~astropy.time.TimeDatetime`                datetime(2000, 1, 2, 12, 0, 0)
+datetime64   :class:`~astropy.time.TimeDatetime64`              np.datetime64('2000-01-01T01:01:01')
 decimalyear  :class:`~astropy.time.TimeDecimalYear`             2000.45
 fits         :class:`~astropy.time.TimeFITS`                    '2000-01-01T00:00:00.000'
+galexsec     :class:`~astropy.time.TimeGalexSec`                758738047.995
 gps          :class:`~astropy.time.TimeGPS`                     630720013.0
 iso          :class:`~astropy.time.TimeISO`                     '2000-01-01 00:00:00.000'
 isot         :class:`~astropy.time.TimeISOT`                    '2000-01-01T00:00:00.000'
@@ -214,7 +216,6 @@ unix         :class:`~astropy.time.TimeUnix`                    946684800.0
 unix_tai     :class:`~astropy.time.TimeUnixTai`                 946684800.0
 yday         :class:`~astropy.time.TimeYearDayTime`             2000:001:00:00:00.000
 ymdhms       :class:`~astropy.time.TimeYMDHMS`                  {'year': 2010, 'month': 3, 'day': 1}
-datetime64   :class:`~astropy.time.TimeDatetime64`              np.datetime64('2000-01-01T01:01:01')
 ===========  =================================================  =====================================
 
 .. note:: The :class:`~astropy.time.TimeFITS` format implements most
@@ -293,7 +294,7 @@ can have higher precision than the standard 64-bit float::
 
   >>> tm = Time('51544.000000000000001', format='mjd')  # String input
   >>> tm.mjd  # float64 output loses last digit but Decimal gets it
-  51544.0
+  np.float64(51544.0)
   >>> tm.to_value('mjd', subfmt='decimal')  # doctest: +SKIP
   Decimal('51544.00000000000000099920072216264')
   >>> tm.to_value('mjd', subfmt='str')
@@ -338,6 +339,7 @@ Time from Epoch Formats
 
 The formats ``cxcsec``, ``gps``, ``unix``, and ``unix_tai`` are special in that
 they provide a floating point representation of the elapsed time in seconds
+(with the caveat that ``unix`` does not include leap seconds)
 since a particular reference date. These formats have a intrinsic time scale
 which is used to compute the elapsed seconds since the reference date.
 
@@ -346,7 +348,7 @@ Format       Scale  Reference date
 ============ ====== ========================
 ``cxcsec``   TT     ``1998-01-01 00:00:00``
 ``unix``     UTC    ``1970-01-01 00:00:00``
-``unix_tai`` TAI    ``1970-01-01 00:00:08``
+``unix_tai`` TAI    ``1970-01-01 00:00:00``
 ``gps``      TAI    ``1980-01-06 00:00:19``
 ============ ====== ========================
 
@@ -383,7 +385,7 @@ local  Local Time Scale          (LOCAL)
 
 .. [#] Wikipedia `time standard <https://en.wikipedia.org/wiki/Time_standard>`_ article
 .. [#] |SOFA| Time Scale and Calendar Tools
-       `(PDF) <http://www.iausofa.org/sofa_ts_c.pdf>`_
+       `(PDF) <https://www.iausofa.org/s/sofa_ts_c.pdf>`_
 
 .. note:: The ``local`` time scale is meant for free-running clocks or
    simulation times (i.e., to represent a time without a properly defined
@@ -416,7 +418,7 @@ returning scalar or array objects as appropriate::
   >>> from astropy.time import Time
   >>> t = Time(100.0, format='mjd')
   >>> t.jd
-  2400100.5
+  np.float64(2400100.5)
   >>> t = Time([100.0, 200.0, 300.], format='mjd')
   >>> t.jd  # doctest: +FLOAT_CMP
   array([2400100.5, 2400200.5, 2400300.5])
@@ -609,7 +611,7 @@ the highest precision. For example::
 
   >>> t = Time(100.0, 0.000001, format='mjd', scale='tt')
   >>> t.jd, t.jd1, t.jd2  # doctest: +FLOAT_CMP
-  (2400100.500001, 2400101.0, -0.499999)
+  (np.float64(2400100.500001), 2400101.0, -0.499999)
 
 format
 ^^^^^^
@@ -995,11 +997,11 @@ available format names is in the `time format`_ section.
 
   >>> t = Time('2010-01-01 00:00:00', format='iso', scale='utc')
   >>> t.jd        # JD representation of time in current scale (UTC)
-  2455197.5
+  np.float64(2455197.5)
   >>> t.iso       # ISO representation of time in current scale (UTC)
   '2010-01-01 00:00:00.000'
   >>> t.unix      # seconds since 1970.0 (UTC)
-  1262304000.0
+  np.float64(1262304000.0)
   >>> t.datetime  # Representation as datetime.datetime object
   datetime.datetime(2010, 1, 1, 0, 0)
 
@@ -1013,9 +1015,10 @@ To get the representation of a |Time| object::
   >>> import matplotlib.pyplot as plt  # doctest: +SKIP
   >>> jyear = np.linspace(2000, 2001, 20)  # doctest: +SKIP
   >>> t = Time(jyear, format='jyear')  # doctest: +SKIP
-  >>> plt.plot_date(t.plot_date, jyear)  # doctest: +SKIP
-  >>> plt.gcf().autofmt_xdate()  # orient date labels at a slant  # doctest: +SKIP
-  >>> plt.draw()  # doctest: +SKIP
+  >>> fig, ax = plt.subplots()  # doctest: +SKIP
+  >>> ax.scatter(t.datetime, jyear)  # doctest: +SKIP
+  >>> fig.autofmt_xdate()  # orient date labels at a slant  # doctest: +SKIP
+  >>> fig.show()  # doctest: +SKIP
 
 .. EXAMPLE END
 
@@ -1098,7 +1101,7 @@ Transformation Offsets
 Time scale transformations that cross one of the orange circles in the image
 above require an additional offset time value that is model or
 observation dependent. See |SOFA| `Time Scale and Calendar Tools
-<http://www.iausofa.org/sofa_ts_c.pdf>`_ for further details.
+<https://www.iausofa.org/s/sofa_ts_c.pdf>`_ for further details.
 
 The two attributes :attr:`~astropy.time.Time.delta_ut1_utc` and
 :attr:`~astropy.time.Time.delta_tdb_tt` provide a way to set
@@ -1112,7 +1115,7 @@ UT1 - UTC and TDB - TT, respectively. As an example::
 
 For the UT1 to UTC offset, you have to interpolate the observed values provided
 by the `International Earth Rotation and Reference Systems (IERS) Service
-<http://www.iers.org>`_. ``astropy`` will automatically download and use values
+<https://www.iers.org>`_. ``astropy`` will automatically download and use values
 from the IERS which cover times spanning from 1973-Jan-01 through one year into
 the future. In addition, the ``astropy`` package is bundled with a data table of
 values provided in Bulletin B, which cover the period from 1962 to shortly
@@ -1140,12 +1143,11 @@ scale along with the auto-download feature::
     request ``UT1-UTC`` for times beyond the range of IERS table data then the
     nearest available values will be provided.
 
-In the case of the TDB to TT offset, most users need only provide the ``lon``
-and ``lat`` values when creating the |Time| object. If the
+In the case of the TDB to TT offset, most users need only provide the
+``location`` when creating the |Time| object. If the
 :attr:`~astropy.time.Time.delta_tdb_tt` attribute is not explicitly set, then
 the |PyERFA| routine `erfa.dtdb` will be used to compute the TDB to TT
-offset. Note that if ``lon`` and ``lat`` are not explicitly initialized,
-values of 0.0 degrees for both will be used.
+offset. If ``location`` is not specified, the center of the Earth is assumed.
 
 Example
 ~~~~~~~
@@ -1153,7 +1155,7 @@ Example
 .. EXAMPLE START: Transformation Offsets in Time Objects
 
 The following code replicates an example in the |SOFA| `Time Scale and Calendar
-Tools <http://www.iausofa.org/sofa_ts_c.pdf>`_ document. It does the transform
+Tools <https://www.iausofa.org/s/sofa_ts_c.pdf>`_ document. It does the transform
 from UTC to all supported time scales (TAI, TCB, TCG, TDB, TT, UT1, UTC). This
 requires an observer location (here, latitude and longitude).
 ::
@@ -1299,7 +1301,7 @@ Use of the |TimeDelta| object is illustrated in the few examples below::
   >>> dt
   <TimeDelta object: scale='tai' format='jd' value=31.0>
   >>> dt.sec
-  2678400.0
+  np.float64(2678400.0)
 
   >>> from astropy.time import TimeDelta
   >>> dt2 = TimeDelta(50.0, format='sec')
@@ -1347,7 +1349,7 @@ controlling the type of the output representation by providing either a format
 name and optional `subformat`_ or a valid ``astropy`` unit::
 
   >>> dt.to_value(u.hr)
-  744.0
+  np.float64(744.0)
   >>> dt.to_value('jd', 'str')
   '31.0'
 
@@ -1644,6 +1646,11 @@ standard `~astropy.time.TimeISO` class from which it inherits::
   >>> t2.iso
   '2016-01-01 00:00:00.000'
 
+.. testcleanup::
+
+  >>> from astropy.time import TIME_FORMATS
+  >>> del TIME_FORMATS["yday_custom"]
+
 .. EXAMPLE END
 
 .. EXAMPLE START: Customizing the TimeFormat Class with Time Since an Epoch
@@ -1670,9 +1677,14 @@ from the `~astropy.time.TimeFromEpoch` class and define a few class attributes::
 
   >>> t = Time('2000-01-01')
   >>> t.unix_leap
-  946684832.0
+  np.float64(946684832.0)
   >>> t.unix_leap - t.unix
-  32.0
+  np.float64(32.0)
+
+.. testcleanup::
+
+  >>> from astropy.time import TIME_FORMATS
+  >>> del TIME_FORMATS["unix_leap"]
 
 .. EXAMPLE END
 
@@ -1787,4 +1799,4 @@ under the terms of the "BSD-three clauses" license.
 
 The |ERFA| library is derived, with permission, from the International
 Astronomical Union's "Standards of Fundamental Astronomy" (|SOFA|) library,
-available from http://www.iausofa.org.
+available from https://www.iausofa.org.

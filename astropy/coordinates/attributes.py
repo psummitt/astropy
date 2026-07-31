@@ -5,17 +5,20 @@ import numpy as np
 
 # Project
 from astropy import units as u
+from astropy.time import Time
 from astropy.utils import ShapedLikeNDArray
-from astropy.utils.compat import COPY_IF_NEEDED
+
+from .earth import EarthLocation
+from .representation import BaseDifferential, CartesianRepresentation
 
 __all__ = [
     "Attribute",
-    "TimeAttribute",
-    "QuantityAttribute",
-    "EarthLocationAttribute",
-    "CoordinateAttribute",
     "CartesianRepresentationAttribute",
+    "CoordinateAttribute",
     "DifferentialAttribute",
+    "EarthLocationAttribute",
+    "QuantityAttribute",
+    "TimeAttribute",
 ]
 
 
@@ -197,8 +200,6 @@ class TimeAttribute(Attribute):
         ValueError
             If the input is not valid for this attribute.
         """
-        from astropy.time import Time
-
         if value is None:
             return None, False
 
@@ -272,8 +273,16 @@ class CartesianRepresentationAttribute(Attribute):
             return CartesianRepresentation(np.zeros(3) * self.unit), True
         else:
             # is it a CartesianRepresentation with correct unit?
+            try:
+                cartesian = value.to_cartesian()
+            except AttributeError:
+                converted = False
+            else:
+                converted = cartesian is not value
+                value = cartesian
+
             if hasattr(value, "xyz") and value.xyz.unit == self.unit:
-                return value, False
+                return value, converted
 
             converted = True
             # if it's a CartesianRepresentation, get the xyz Quantity
@@ -369,7 +378,7 @@ class QuantityAttribute(Attribute):
             )
 
         oldvalue = value
-        value = u.Quantity(oldvalue, self.unit, copy=COPY_IF_NEEDED)
+        value = u.Quantity(oldvalue, self.unit, copy=None)
         if self.shape is not None and value.shape != self.shape:
             if value.shape == () and oldvalue == 0:
                 # Allow a single 0 to fill whatever shape is needed.
@@ -566,8 +575,3 @@ class DifferentialAttribute(Attribute):
                 )
 
         return value, True
-
-
-# do this here to prevent a series of complicated circular imports
-from .earth import EarthLocation  # noqa: E402
-from .representation import BaseDifferential, CartesianRepresentation  # noqa: E402

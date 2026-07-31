@@ -1,3 +1,8 @@
+dependencies:
+- any:
+  - head-branch:
+    - '^update-astropy-iers-data-pin-\d+$'
+
 Docs:
 - changed-files:
   - any-glob-to-any-file:
@@ -65,13 +70,12 @@ installation:
   - any-glob-to-any-file:
     - docs/install.rst
     - MANIFEST.in
-    - pyproject.toml
     - setup.py
 
 Release:
 - changed-files:
   - any-glob-to-any-file:
-    - docs/development/releasing.rst
+    - docs/development/maintainers/releasing.rst
     - .github/workflows/publish.yml
 
 config:
@@ -163,7 +167,6 @@ table:
 - changed-files:
   - any-glob-to-any-file:
     - '**/table/**/*'
-    - astropy/extern/jquery/**/*
 
 time:
 - changed-files:

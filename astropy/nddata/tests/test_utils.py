@@ -19,6 +19,7 @@ from astropy.nddata import (
     subpixel_indices,
 )
 from astropy.tests.helper import assert_quantity_allclose
+from astropy.utils.compat.optional_deps import HAS_MATPLOTLIB
 from astropy.wcs import WCS, Sip
 from astropy.wcs.utils import proj_plane_pixel_area
 
@@ -44,7 +45,6 @@ test_slices = [
 
 subsampling = 5
 
-test_pos_bad = [(-1, -4), (-2, 0), (6, 2), (6, 6)]
 test_nonfinite_positions = [
     (np.nan, np.nan),
     (np.inf, np.inf),
@@ -67,11 +67,23 @@ def test_slices_pos_different_dim():
         overlap_slices((4, 5), (1, 2), (0, 0, 3))
 
 
-@pytest.mark.parametrize("pos", test_pos_bad)
-def test_slices_no_overlap(pos):
+@pytest.mark.parametrize(
+    "inputs",
+    [
+        ((5, 5), (2, 2), (-1, -4)),
+        ((5, 5), (2, 2), (-2, -0)),
+        ((5, 5), (2, 2), (6, 2)),
+        ((5, 5), (2, 2), (6, 6)),
+        ((7, 7), (0, 0), (-2, -2)),
+        ((7, 7), (3, 3), (-2, -2)),
+        ((7, 7), (3, 3), (-2, 2)),
+        ((7, 7), (3, 3), (2, -2)),
+    ],
+)
+def test_slices_no_overlap(inputs):
     """If there is no overlap between arrays, an error should be raised."""
     with pytest.raises(NoOverlapError):
-        overlap_slices((5, 5), (2, 2), pos)
+        overlap_slices(*inputs)
 
 
 def test_slices_partial_overlap():
@@ -135,6 +147,84 @@ def test_slices_nonfinite_position(position):
 
     with pytest.raises(ValueError):
         overlap_slices((7, 7), (3, 3), position)
+
+
+@pytest.mark.parametrize(
+    "small_array_shape, position, limit_rounding_method, expected_lg, expected_sm",
+    [
+        (
+            (3, 5),
+            (4, 5),
+            np.ceil,
+            (slice(3, 6), slice(3, 8)),
+            (slice(0, 3), slice(0, 5)),
+        ),
+        (
+            (3, 5),
+            (4, 5),
+            np.floor,
+            (slice(2, 5), slice(2, 7)),
+            (slice(0, 3), slice(0, 5)),
+        ),
+        (
+            (3, 5),
+            (4.2, 5.6),
+            np.round,
+            (slice(3, 6), slice(3, 8)),
+            (slice(0, 3), slice(0, 5)),
+        ),
+        (
+            (3, 3),
+            (6, 6),
+            np.round,
+            (slice(4, 7), slice(4, 7)),
+            (slice(0, 3), slice(0, 3)),
+        ),
+        (
+            (3, 3),
+            (5, 5),
+            np.round,
+            (slice(4, 7), slice(4, 7)),
+            (slice(0, 3), slice(0, 3)),
+        ),
+        (
+            (3, 3),
+            (5, 5),
+            np.trunc,
+            (slice(3, 6), slice(3, 6)),
+            (slice(0, 3), slice(0, 3)),
+        ),
+    ],
+)
+def test_slices_limit_rounding_method(
+    small_array_shape, position, limit_rounding_method, expected_lg, expected_sm
+):
+    """Call overlap_slices with different limit rounding methods."""
+    slc_lg, slc_sm = overlap_slices(
+        (10, 10),
+        small_array_shape,
+        position,
+        limit_rounding_method=limit_rounding_method,
+    )
+    assert slc_lg == expected_lg
+    assert slc_sm == expected_sm
+
+
+@pytest.mark.parametrize(
+    "limit_rounding_method, error_msg",
+    [
+        (None, "^Limit rounding method must be a callable"),
+        ("invalid", "^Limit rounding method must be a callable"),
+        (lambda x: (1, 2), "^Limit rounding method must accept a single number"),
+        (lambda x: "invalid", "^Limit rounding method must accept a single number"),
+        (lambda x, y: 1, "^Limit rounding method must accept a single number"),
+        (lambda: 1, "^Limit rounding method must accept a single number"),
+    ],
+)
+def test_slices_wrong_limit_rounding_method(limit_rounding_method, error_msg):
+    """Call overlap_slices with an invalid rounding method."""
+    with pytest.raises(ValueError, match=error_msg):
+        overlap_slices((5,), (3,), (0,), limit_rounding_method=limit_rounding_method)
 
 
 def test_extract_array_even_shape_rounding():
@@ -393,7 +483,7 @@ def test_add_array_equal_shape():
 
 
 @pytest.mark.parametrize(
-    ("position", "subpixel_index"), zip(test_positions, test_position_indices)
+    ("position", "subpixel_index"), list(zip(test_positions, test_position_indices))
 )
 def test_subpixel_indices(position, subpixel_index):
     """
@@ -543,6 +633,25 @@ class TestCutout2D:
         c2.data[xy] = value
         assert data[yx] != value
 
+    @pytest.mark.parametrize(
+        "position, limit_rounding_method, expected_slices_original",
+        [
+            ((2, 2), np.ceil, (slice(1, 4), slice(1, 4))),
+            ((2, 2), np.floor, (slice(0, 3), slice(0, 3))),
+            ((1.9, 2.9), np.round, (slice(1, 4), slice(0, 3))),
+            ((2, 2), np.trunc, (slice(0, 3), slice(0, 3))),
+        ],
+    )
+    def test_limit_rounding_method(
+        self, position, limit_rounding_method, expected_slices_original
+    ):
+        c = Cutout2D(
+            self.data, position, (3, 3), limit_rounding_method=limit_rounding_method
+        )
+        assert c.data.shape == (3, 3)
+        assert c.slices_original == expected_slices_original
+        assert c.slices_cutout == (slice(0, 3), slice(0, 3))
+
     def test_to_from_large(self):
         position = (2, 2)
         c = Cutout2D(self.data, position, (3, 3))
@@ -592,6 +701,41 @@ class TestCutout2D:
             w.all_pix2world(*w.wcs.crpix, 1), w.wcs.crval, rtol=0.0, atol=1e-6 * pscale
         )
 
+    @pytest.mark.skipif(not HAS_MATPLOTLIB, reason="requires matplotlib")
+    @pytest.mark.parametrize(
+        "position, size",
+        [
+            ((2, 2), (4, 4)),  # even-sized cutout
+            ((2, 2), (3, 3)),  # odd-sized cutout
+            ((2.1, 1.9), (3, 5)),  # non-integer position, asymmetric size
+        ],
+    )
+    def test_plot_on_original(self, position, size):
+        """
+        Regression test to ensure plot_on_original draws a rectangle
+        that matches the actual pixel extent of the cutout.
+        """
+        import matplotlib.pyplot as plt
+
+        cutout = Cutout2D(self.data, position, size)
+
+        fig, ax = plt.subplots()
+        cutout.plot_on_original(ax=ax)
+        patch = ax.patches[0]
+
+        # The rectangle should span from (xmin - 0.5) to (xmax + 0.5)
+        # and (ymin - 0.5) to (ymax + 0.5) in pixel coordinates.
+        x0, y0 = patch.get_xy()
+        width = patch.get_width()
+        height = patch.get_height()
+
+        assert_allclose(x0, cutout.xmin_original - 0.5)
+        assert_allclose(y0, cutout.ymin_original - 0.5)
+        assert_allclose(width, cutout.xmax_original - cutout.xmin_original + 1)
+        assert_allclose(height, cutout.ymax_original - cutout.ymin_original + 1)
+
+        plt.close(fig)
+
     def test_cutout_with_nddata_as_input(self):
         # This is essentially a copy/paste of test_skycoord with the
         # input a ccd with wcs attribute instead of passing the
@@ -624,6 +768,9 @@ def test_cutout_section(tmp_path):
             100 * u.pix,
         )
 
+        # Partial cutout
+        c = Cutout2D(hdul[1].section, (75, 75), 100 * u.pix, mode="partial")
+
     chdu = fits.CompImageHDU(data=data)
     chdu.writeto(tmp_path / "compressed.fits")
 
@@ -633,3 +780,30 @@ def test_cutout_section(tmp_path):
             (75, 75),
             100 * u.pix,
         )
+
+        # Partial cutout
+        c = Cutout2D(hdul[1].section, (75, 75), 100 * u.pix, mode="partial")
+
+
+def test_cutout_section_with_bzero_bscale_blank(tmp_path):
+    # Make sure that one can pass ImageHDU.section and CompImageHDU.section
+    # to Cutout2D
+
+    data = (np.arange(200 * 200).reshape(200, 200) - 20_000).astype(np.int16)
+    hdu = fits.ImageHDU(data=data)
+    hdu._scale_internal(bzero=1.234, bscale=0.0002, blank=32767)
+    hdu.writeto(tmp_path / "uncompressed.fits")
+
+    position, size = (25, 25), 100 * u.pix
+
+    with fits.open(tmp_path / "uncompressed.fits") as hdul:
+        # Partial cutout
+        c = Cutout2D(hdul[1].section, position, size, mode="partial")
+
+    chdu = fits.CompImageHDU(data=data)
+    chdu._scale_internal(bzero=1.234, bscale=0.0002, blank=32767)
+    chdu.writeto(tmp_path / "compressed.fits")
+
+    with fits.open(tmp_path / "compressed.fits") as hdul:
+        # Partial cutout
+        c = Cutout2D(hdul[1].section, position, size, mode="partial")

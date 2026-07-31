@@ -1,5 +1,6 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 import numbers
+from functools import cached_property
 
 import numpy as np
 
@@ -10,26 +11,19 @@ from astropy.units import (
     UnitsError,
     UnitTypeError,
     dimensionless_unscaled,
-    photometric,
 )
-from astropy.utils.compat.numpycompat import NUMPY_LT_2_0
 
 from .core import FunctionQuantity, FunctionUnitBase
-from .units import dB, dex, mag
 
 __all__ = [
+    "Decibel",
+    "DecibelUnit",
+    "Dex",
+    "DexUnit",
+    "LogQuantity",
     "LogUnit",
     "MagUnit",
-    "DexUnit",
-    "DecibelUnit",
-    "LogQuantity",
     "Magnitude",
-    "Decibel",
-    "Dex",
-    "STmag",
-    "ABmag",
-    "M_bol",
-    "m_bol",
 ]
 
 
@@ -52,8 +46,10 @@ class LogUnit(FunctionUnitBase):
     """
 
     # the four essential overrides of FunctionUnitBase
-    @property
+    @cached_property
     def _default_function_unit(self):
+        from .units import dex
+
         return dex
 
     @property
@@ -64,12 +60,17 @@ class LogUnit(FunctionUnitBase):
         """Transformation from value in physical to value in logarithmic units.
         Used in equivalency.
         """
+        # Local import to avoid circular dependency.
+        from .units import dex
+
         return dex.to(self._function_unit, np.log10(x))
 
     def to_physical(self, x):
         """Transformation from value in logarithmic to value in physical units.
         Used in equivalency.
         """
+        from .units import dex
+
         return 10 ** self._function_unit.to(dex, x)
 
     # ^^^^ the four essential overrides of FunctionUnitBase
@@ -143,8 +144,10 @@ class MagUnit(LogUnit):
         unit such as ``2 mag``.
     """
 
-    @property
+    @cached_property
     def _default_function_unit(self):
+        from .units import mag
+
         return mag
 
     @property
@@ -166,8 +169,10 @@ class DexUnit(LogUnit):
         unit such as ``0.5 dex``.
     """
 
-    @property
+    @cached_property
     def _default_function_unit(self):
+        from .units import dex
+
         return dex
 
     @property
@@ -181,7 +186,7 @@ class DexUnit(LogUnit):
             else:
                 return f"[{self.physical_unit.to_string(format=format)}]"
         else:
-            return super().to_string()
+            return super().to_string(format=format)
 
 
 class DecibelUnit(LogUnit):
@@ -198,8 +203,10 @@ class DecibelUnit(LogUnit):
         unit such as ``2 dB``.
     """
 
-    @property
+    @cached_property
     def _default_function_unit(self):
+        from .units import dB
+
         return dB
 
     @property
@@ -391,21 +398,15 @@ class LogQuantity(FunctionQuantity):
         unit = self.unit._copy(dimensionless_unscaled)
         return self._wrap_function(np.std, axis, dtype, out=out, ddof=ddof, unit=unit)
 
-    if NUMPY_LT_2_0:
-
-        def ptp(self, axis=None, out=None):
+    def __array_function__(self, function, types, args, kwargs):
+        # TODO: generalize this to all supported functions!
+        if function is np.ptp:
             unit = self.unit._copy(dimensionless_unscaled)
-            return self._wrap_function(np.ptp, axis, out=out, unit=unit)
-
-    else:
-
-        def __array_function__(self, function, types, args, kwargs):
-            # TODO: generalize this to all supported functions!
-            if function is np.ptp:
-                unit = self.unit._copy(dimensionless_unscaled)
-                return self._wrap_function(np.ptp, *args[1:], unit=unit, **kwargs)
-            else:
-                return super().__array_function__(function, types, args, kwargs)
+            return self._wrap_function(np.ptp, *args[1:], unit=unit, **kwargs)
+        elif function is np.diff:
+            return self.diff(*args[1:], **kwargs)
+        else:
+            return super().__array_function__(function, types, args, kwargs)
 
     def diff(self, n=1, axis=-1):
         unit = self.unit._copy(dimensionless_unscaled)
@@ -430,25 +431,3 @@ class Decibel(LogQuantity):
 
 class Magnitude(LogQuantity):
     _unit_class = MagUnit
-
-
-dex._function_unit_class = DexUnit
-dB._function_unit_class = DecibelUnit
-mag._function_unit_class = MagUnit
-
-
-STmag = MagUnit(photometric.STflux)
-STmag.__doc__ = "ST magnitude: STmag=-21.1 corresponds to 1 erg/s/cm2/A"
-
-ABmag = MagUnit(photometric.ABflux)
-ABmag.__doc__ = "AB magnitude: ABmag=-48.6 corresponds to 1 erg/s/cm2/Hz"
-
-M_bol = MagUnit(photometric.Bol)
-M_bol.__doc__ = (
-    f"Absolute bolometric magnitude: M_bol=0 corresponds to L_bol0={photometric.Bol.si}"
-)
-
-m_bol = MagUnit(photometric.bol)
-m_bol.__doc__ = (
-    f"Apparent bolometric magnitude: m_bol=0 corresponds to f_bol0={photometric.bol.si}"
-)

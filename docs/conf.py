@@ -25,9 +25,13 @@
 # See sphinx_astropy.conf for which values are set there.
 
 import doctest
+import inspect
+import operator
 import os
 import sys
-from datetime import datetime, timezone
+import tomllib
+import warnings
+from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
 
@@ -36,12 +40,6 @@ from packaging.specifiers import SpecifierSet
 from sphinx.util import logging
 
 # from docs import global_substitutions
-
-
-if sys.version_info < (3, 11):
-    import tomli as tomllib
-else:
-    import tomllib
 
 logger = logging.getLogger(__name__)
 
@@ -72,11 +70,10 @@ if missing_requirements:
     logger.error(msg)
     sys.exit(1)
 
-from sphinx_astropy.conf.v2 import *  # noqa: E402, F403
-from sphinx_astropy.conf.v2 import (  # noqa: E402
+from sphinx_astropy.conf.v3 import *  # noqa: E402, F403
+from sphinx_astropy.conf.v3 import (  # noqa: E402
     exclude_patterns,
     extensions,
-    html_theme_options,
     intersphinx_mapping,
     numpydoc_xref_aliases,
     numpydoc_xref_astropy_aliases,
@@ -100,22 +97,16 @@ plot_pre_code = ""
 # -- General configuration ----------------------------------------------------
 
 # If your documentation needs a minimal Sphinx version, state it here.
-needs_sphinx = "3.0"
-
-# The intersphinx_mapping in sphinx_astropy.sphinx refers to astropy for
-# the benefit of other packages who want to refer to objects in the
-# astropy core.  However, we don't want to cyclically reference astropy in its
-# own build so we remove it here.
-del intersphinx_mapping["astropy"]
+needs_sphinx = "8.2.0"  # keep in sync with pyproject.toml
 
 # add any custom intersphinx for astropy
+intersphinx_resolve_self = "astropy"
 intersphinx_mapping.update(
     {
-        "astropy-dev": ("https://docs.astropy.org/en/latest/", None),
         "pyerfa": ("https://pyerfa.readthedocs.io/en/stable/", None),
         "pytest": ("https://docs.pytest.org/en/stable/", None),
         "ipython": ("https://ipython.readthedocs.io/en/stable/", None),
-        "pandas": ("https://pandas.pydata.org/pandas-docs/stable/", None),
+        "pandas": ("https://pandas.pydata.org/docs/", None),
         "sphinx_automodapi": (
             "https://sphinx-automodapi.readthedocs.io/en/stable/",
             None,
@@ -123,6 +114,7 @@ intersphinx_mapping.update(
         "asdf-astropy": ("https://asdf-astropy.readthedocs.io/en/latest/", None),
         "fsspec": ("https://filesystem-spec.readthedocs.io/en/latest/", None),
         "cycler": ("https://matplotlib.org/cycler/", None),
+        "dask": ("https://docs.dask.org/en/stable/", None),
     }
 )
 
@@ -136,7 +128,12 @@ if "templates_path" not in locals():  # in case parent conf.py defines it
     templates_path = []
 templates_path.append("_templates")
 
-extensions += ["sphinx_changelog", "sphinx_design", "sphinxcontrib.globalsubs"]
+extensions += [
+    "matplotlib.sphinxext.roles",
+    "sphinx_changelog",
+    "sphinx_design",
+    "sphinxcontrib.globalsubs",
+]
 
 # Grab minversion from pyproject.toml
 with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as f:
@@ -190,6 +187,7 @@ numpydoc_xref_aliases.update(
         "ints": ":class:`python:int`",
         # for astropy
         "number": ":term:`number`",
+        "Quantity": ":class:`~astropy.units.Quantity`",
         "Representation": ":class:`~astropy.coordinates.BaseRepresentation`",
         "writable": ":term:`writable file-like object`",
         "readable": ":term:`readable file-like object`",
@@ -202,11 +200,14 @@ numpydoc_xref_aliases.update(numpydoc_xref_astropy_aliases)
 # Turn off table of contents entries for functions and classes
 toc_object_entries = False
 
+# Disable type hints in the API documentation.
+autodoc_typehints = "none"
+
 # -- Project information ------------------------------------------------------
 
 project = "Astropy"
 author = "The Astropy Developers"
-copyright = f"2011–{datetime.now(tz=timezone.utc).year}, " + author
+copyright = f"2011–{datetime.now(tz=UTC).year}, " + author
 
 # The version info for the project you're documenting, acts as replacement for
 # |version| and |release|, also used in various other places throughout the
@@ -229,43 +230,104 @@ modindex_common_prefix = ["astropy."]
 
 # -- Options for HTML output ---------------------------------------------------
 
-html_theme_options.update(
-    {
-        "github_url": "https://github.com/astropy/astropy",
-        "external_links": [
-            {"name": "Tutorials", "url": "https://learn.astropy.org/"},
-        ],
-        "use_edit_page_button": True,
-        "logo": {
-            "image_light": "_static/astropy_banner_96.png",
-            "image_dark": "_static/astropy_banner_96_dark.png",
-        },
-        # https://github.com/pydata/pydata-sphinx-theme/issues/1492
-        "navigation_with_keys": False,
-    }
-)
+html_theme_options = {
+    "analytics": {
+        "google_analytics_id": "G-R0510VK4B6",
+    },
+    "github_url": "https://github.com/astropy/astropy",
+    "use_edit_page_button": True,
+}
 
 # The name for this set of Sphinx documents.  If None, it defaults to
 # "<project> v<release> documentation".
 html_title = f"{project} v{release}"
 
-html_favicon = "_static/astropy_logo.ico"
-
+html_static_path = ["_static"]
 html_css_files = ["astropy.css"]
 html_copy_source = False
 
 # Output file base name for HTML help builder.
 htmlhelp_basename = project + "doc"
 
+# Set canonical URL from the Read the Docs Domain
+html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "")
+
+
+def _custom_edit_url(
+    github_user,
+    github_repo,
+    github_version,
+    doc_path,
+    file_name,
+    default_edit_page_url_template,
+):
+    """Create custom 'edit' URLs for API modules since they are dynamically generated."""
+    if file_name.startswith("api/astropy.") and file_name.endswith(".rst"):
+        # this is a dynamically generated API page
+        astropy_path = file_name.removeprefix("api/astropy.").removesuffix(".rst")
+        item = operator.attrgetter(astropy_path)(astropy)  # noqa: F405
+        if module := getattr(item, "__module__", None):
+            mod_dir, _, mod_file = module.rpartition(".")
+            new_file_name = mod_file + ".py"
+            # Remove wrappings, such as functools.cache in astropy.units.equivalencies.
+            # This also avoids "could not find source" warnings.  But don't remove
+            # a correct one for sharedmethod.
+            if module != "astropy.utils.decorators":
+                while wrapped := getattr(item, "__wrapped__", None):
+                    item = wrapped
+            try:
+                line_no = inspect.findsource(item)[1]
+            except Exception:
+                # Warn if not just a cosmology instance, or a wcs compiled function.
+                if not (
+                    (
+                        "cosmology.realizations" in file_name
+                        and not isinstance(item, type)
+                    )
+                    or "modeling.tabular.Tabular" in file_name
+                    or "astropy.wcs" in file_name
+                ):
+                    warnings.warn(
+                        f"could not find source for {doc_path=}, {file_name=}"
+                    )
+            else:
+                new_file_name += f"#L{line_no + 1}"
+            doc_path = mod_dir.replace(".", "/") + "/"
+            file_name = new_file_name
+        else:
+            if "cosmology.realizations.available" in file_name:
+                doc_path = "astropy/cosmology/"
+                file_name = "realizations.py"
+            else:
+                warnings.warn(f"could not find module for {doc_path=}, {file_name=}")
+                # Fall back for items that do not even have a module. Hope for the best.
+                doc_path = "astropy"
+                file_name = astropy_path.replace(".", "/")
+
+    return default_edit_page_url_template.format(
+        github_user=github_user,
+        github_repo=github_repo,
+        github_version=github_version,
+        doc_path=doc_path,
+        file_name=file_name,
+    )
+
+
 # A dictionary of values to pass into the template engine's context for all pages.
 html_context = {
     "default_mode": "light",
+    "version_slug": os.environ.get("READTHEDOCS_VERSION") or "",
     "to_be_indexed": ["stable", "latest"],
     "is_development": dev,
     "github_user": "astropy",
     "github_repo": "astropy",
     "github_version": "main",
     "doc_path": "docs",
+    "edit_page_url_template": "{{ astropy_custom_edit_url(github_user, github_repo, github_version, doc_path, file_name, default_edit_page_url_template) }}",
+    "default_edit_page_url_template": "https://github.com/{github_user}/{github_repo}/edit/{github_version}/{doc_path}{file_name}",
+    "astropy_custom_edit_url": _custom_edit_url,
+    # Tell Jinja2 templates the build is running on Read the Docs
+    "READTHEDOCS": os.environ.get("READTHEDOCS", "") == "True",
 }
 
 # Add any extra paths that contain custom files (such as robots.txt or
@@ -290,7 +352,7 @@ latex_logo = "_static/astropy_logo.pdf"
 # (source start file, name, description, authors, manual section).
 man_pages = [("index", project.lower(), project + " Documentation", [author], 1)]
 
-# Setting this URL is requited by sphinx-astropy
+# Setting this URL is required by sphinx-astropy
 github_issues_url = "https://github.com/astropy/astropy/issues/"
 edit_on_github_branch = "main"
 
@@ -298,6 +360,7 @@ edit_on_github_branch = "main"
 # resolve.
 
 nitpicky = True
+show_warning_types = True
 # See docs/nitpick-exceptions file for the actual listing.
 nitpick_ignore = []
 for line in open("nitpick-exceptions"):
@@ -306,42 +369,14 @@ for line in open("nitpick-exceptions"):
     dtype, target = line.split(None, 1)
     nitpick_ignore.append((dtype, target.strip()))
 
-# -- Options for the Sphinx gallery -------------------------------------------
+# NumPy frequently relocates its private typing namespace between releases
+# (e.g. numpy._typing.ArrayLike -> numpy._typing._array_like.ArrayLike), so
+# match the whole private namespace rather than tracking individual paths.
+nitpick_ignore_regex = [("py:obj", r"numpy\._typing\..*")]
 
-try:
-    import warnings
-
-    import sphinx_gallery
-
-    extensions += ["sphinx_gallery.gen_gallery"]
-
-    sphinx_gallery_conf = {
-        "backreferences_dir": "generated/modules",  # path to store the module using example template
-        "filename_pattern": "^((?!skip_).)*$",  # execute all examples except those that start with "skip_"
-        "examples_dirs": f"..{os.sep}examples",  # path to the examples scripts
-        "gallery_dirs": "generated/examples",  # path to save gallery generated examples
-        "reference_url": {
-            "astropy": None,
-            "matplotlib": "https://matplotlib.org/stable/",
-            "numpy": "https://numpy.org/doc/stable/",
-        },
-        "abort_on_example_error": True,
-    }
-
-    # Filter out backend-related warnings as described in
-    # https://github.com/sphinx-gallery/sphinx-gallery/pull/564
-    warnings.filterwarnings(
-        "ignore",
-        category=UserWarning,
-        message=(
-            "Matplotlib is currently using agg, which is a"
-            " non-GUI backend, so cannot show the figure."
-        ),
-    )
-
-except ImportError:
-    sphinx_gallery = None
-
+suppress_warnings = [
+    "config.cache",  # our rebuild is okay
+]
 
 # -- Options for linkcheck output -------------------------------------------
 linkcheck_retry = 5
@@ -351,16 +386,24 @@ linkcheck_ignore = [
     "https://www.usno.navy.mil/USNO/time/gps/usno-gps-time-transfer",
     "https://aa.usno.navy.mil/publications/docs/Circular_179.php",
     "http://data.astropy.org",
+    "https://astropy-dei.orgmycology.com/",  # 403 Client Error: Forbidden
     "https://doi.org/",  # CI blocked by service provider
+    "https://codata.org/",  # CI blocked by service provider
+    "https://zenodo.org/",  # 403 Client Error: Forbidden
     "https://ui.adsabs.harvard.edu",  # CI blocked by service provider
+    "https://hst-docs.stsci.edu",  # CI blocked by service provider
     "https://www.tandfonline.com/",  # 403 Client Error: Forbidden
     "https://stackoverflow.com/",  # 403 Client Error: Forbidden
+    "https://docutils.sourceforge.io",  # 403 Client Error: Forbidden
     "https://ieeexplore.ieee.org/",  # 418 Client Error: I'm a teapot
     "https://pyfits.readthedocs.io/en/v3.2.1/",  # defunct page in CHANGES.rst
+    "https://pkgs.dev.azure.com/astropy-project",  # defunct page in CHANGES.rst
     r"https://github\.com/astropy/astropy/(?:issues|pull)/\d+",
 ]
 linkcheck_timeout = 180
 linkcheck_anchors = False
+linkcheck_report_timeouts_as_broken = True
+linkcheck_allow_unauthorized = False
 
 
 def rstjinja(app, docname, source):
@@ -375,54 +418,6 @@ def rstjinja(app, docname, source):
             source[0], app.config.html_context
         )
         source[0] = rendered
-
-
-def resolve_astropy_and_dev_reference(app, env, node, contnode):
-    """
-    Reference targets for ``astropy:`` and ``astropy-dev:`` are special cases.
-
-    Documentation links in astropy can be set up as intersphinx links so that
-    affiliate packages do not have to override the docstrings when building
-    the docs.
-
-    If we are building the development docs it is a local ref targeting the
-    label ``astropy-dev:<label>``, but for stable docs it should be an
-    intersphinx resolution to the development docs.
-
-    See https://github.com/astropy/astropy/issues/11366
-    """
-    # should the node be processed?
-    reftarget = node.get("reftarget")  # str or None
-    if str(reftarget).startswith("astropy:"):
-        # This allows Astropy to use intersphinx links to itself and have
-        # them resolve to local links. Downstream packages will see intersphinx.
-        # TODO! deprecate this if sphinx-doc/sphinx/issues/9169 is implemented.
-        process, replace = True, "astropy:"
-    elif dev and str(reftarget).startswith("astropy-dev:"):
-        process, replace = True, "astropy-dev:"
-    else:
-        process, replace = False, ""
-
-    # make link local
-    if process:
-        reftype = node.get("reftype")
-        refdoc = node.get("refdoc", app.env.docname)
-        # convert astropy intersphinx targets to local links.
-        # there are a few types of intersphinx link patterns, as described in
-        # https://docs.readthedocs.io/en/stable/guides/intersphinx.html
-        reftarget = reftarget.replace(replace, "")
-        if reftype == "doc":  # also need to replace the doc link
-            node.replace_attr("reftarget", reftarget)
-        # Delegate to the ref node's original domain/target (typically :ref:)
-        try:
-            domain = app.env.domains[node["refdomain"]]
-            return domain.resolve_xref(
-                app.env, refdoc, app.builder, reftype, reftarget, node, contnode
-            )
-        except Exception:
-            pass
-
-        # Otherwise return None which should delegate to intersphinx
 
 
 __minimum_python_version__ = pyproject["project"]["requires-python"].replace(">=", "")
@@ -520,17 +515,17 @@ links_to_become_substitutions: dict[str, str] = {
     "PEP8": "https://www.python.org/dev/peps/pep-0008",
     # Astropy
     "Astropy mailing list": "https://mail.python.org/mailman/listinfo/astropy",
-    "astropy-dev mailing list": "http://groups.google.com/group/astropy-dev",
+    "astropy-dev mailing list": "https://groups.google.com/group/astropy-dev",
     # NumPy
     "NumPy": "https://numpy.org",
     "numpydoc": "https://pypi.org/project/numpydoc",
     # erfa
     "ERFA": "https://github.com/liberfa/erfa",
-    "PyERFA": "http://pyerfa.readthedocs.org",
+    "PyERFA": "https://pyerfa.readthedocs.io",
     # matplotlib
     "Matplotlib": "https://matplotlib.org",
     # sofa
-    "SOFA": "http://www.iausofa.org/index.html",
+    "SOFA": "https://www.iausofa.org",
     # scipy
     "SciPy": "https://www.scipy.org",
     # packaging
@@ -549,7 +544,6 @@ links_to_become_substitutions: dict[str, str] = {
     "miniconda": "https://docs.conda.io/en/latest/miniconda.html",
     # pytest
     "pytest": "https://pytest.org/en/latest/index.html",
-    "pytest-astropy": "https://github.com/astropy/pytest-astropy",
     "pytest-doctestplus": "https://github.com/astropy/pytest-doctestplus",
     "pytest-remotedata": "https://github.com/astropy/pytest-remotedata",
     # fsspec
@@ -557,11 +551,15 @@ links_to_become_substitutions: dict[str, str] = {
     # s3fs
     "s3fs": "https://s3fs.readthedocs.io",
     # TOPCAT
-    "STIL": "http://www.starlink.ac.uk/stil",
-    "STILTS": "http://www.starlink.ac.uk/stilts",
-    "TOPCAT": "http://www.starlink.ac.uk/topcat",
+    "STIL": "https://www.star.bristol.ac.uk/mbt/stil",
+    "STILTS": "https://www.star.bristol.ac.uk/mbt/stilts",
+    "TOPCAT": "https://www.star.bristol.ac.uk/mbt/topcat",
     # OpenAstronomy
     "OpenAstronomy Packaging Guide": "https://packaging-guide.openastronomy.org/en/latest",
+    # Miscellaneous
+    "HDF5": "https://www.hdfgroup.org/HDF5",
+    "h5py": "https://www.h5py.org",
+    "Parquet": "https://parquet.apache.org",
 }
 
 processed_links = {
@@ -572,17 +570,5 @@ global_substitutions |= processed_links
 
 
 def setup(app):
-    if sphinx_gallery is None:
-        logger.warning(
-            "The sphinx_gallery extension is not installed, so the "
-            "gallery will not be built.  You will probably see "
-            "additional warnings about undefined references due "
-            "to this."
-        )
-
     # Generate the page from Jinja template
     app.connect("source-read", rstjinja)
-    # Set this to higher priority than intersphinx; this way when building
-    # dev docs astropy-dev: targets will go to the local docs instead of the
-    # intersphinx mapping
-    app.connect("missing-reference", resolve_astropy_and_dev_reference, priority=400)

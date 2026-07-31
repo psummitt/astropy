@@ -9,42 +9,49 @@ import difflib
 import inspect
 import json
 import locale
-import os
 import re
-import signal
 import sys
 import threading
 import traceback
 import unicodedata
+from collections import defaultdict
+from collections.abc import Callable, Generator, Iterable
 from contextlib import contextmanager
+from itertools import chain
+from types import TracebackType
+from typing import Final
+from urllib.parse import urlencode
+
+import numpy as np
 
 from astropy.utils import deprecated
+from astropy.version import version as __version__
 
 __all__ = [
-    "isiterable",
-    "silence",
-    "format_exception",
-    "NumpyRNGContext",
-    "find_api_page",
-    "is_path_hidden",
-    "walk_skip_hidden",
     "JsonCustomEncoder",
-    "indent",
+    "NumpyRNGContext",
     "dtype_bytes_or_chars",
+    "find_api_page",
+    "format_exception",
+    "indent",
+    "isiterable",
+    "online_help",
+    "silence",
 ]
 
-NOT_OVERWRITING_MSG = (
+NOT_OVERWRITING_MSG: Final = (
     "File {} already exists. If you mean to replace it "
     'then use the argument "overwrite=True".'
 )
 # A useful regex for tests.
-_NOT_OVERWRITING_MSG_MATCH = (
+_NOT_OVERWRITING_MSG_MATCH: Final = (
     r"File .* already exists\. If you mean to "
     r"replace it then use the argument "
     r'"overwrite=True"\.'
 )
 
 
+@deprecated(since="7.2", alternative="numpy.iterable()")
 def isiterable(obj):
     """Returns `True` if the given object is iterable."""
     try:
@@ -67,12 +74,18 @@ def indent(s, shift=1, width=4):
 class _DummyFile:
     """A noop writeable object."""
 
-    def write(self, s):
+    def write(self, s: str) -> None:
         pass
+
+    def flush(self) -> None:
+        pass
+
+    def isatty(self) -> bool:
+        return False
 
 
 @contextlib.contextmanager
-def silence():
+def silence() -> Generator[None, None, None]:
     """A context manager that silences sys.stdout and sys.stderr."""
     old_stdout = sys.stdout
     old_stderr = sys.stderr
@@ -83,6 +96,7 @@ def silence():
     sys.stderr = old_stderr
 
 
+@deprecated(since="7.0")
 def format_exception(msg, *args, **kwargs):
     """Fill in information about the exception that occurred.
 
@@ -150,22 +164,28 @@ class NumpyRNGContext:
 
     """
 
-    def __init__(self, seed):
+    def __init__(self, seed: int) -> None:
         self.seed = seed
 
-    def __enter__(self):
-        from numpy import random
+    def __enter__(self) -> None:
+        self.startstate = np.random.get_state()
+        np.random.seed(self.seed)
 
-        self.startstate = random.get_state()
-        random.seed(self.seed)
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        np.random.set_state(self.startstate)
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        from numpy import random
 
-        random.set_state(self.startstate)
-
-
-def find_api_page(obj, version=None, openinbrowser=True, timeout=None):
+def find_api_page(
+    obj: object,
+    version: str | None = None,
+    openinbrowser: bool = True,
+    timeout: float | None = None,
+) -> str:
     """
     Determines the URL of the API page for the specified object, and
     optionally open that page in a web browser.
@@ -291,91 +311,27 @@ def find_api_page(obj, version=None, openinbrowser=True, timeout=None):
     return resurl
 
 
-def signal_number_to_name(signum):
+# The location of the online documentation for astropy
+# This location will normally point to the current released version of astropy
+online_docs_root: Final = "https://docs.astropy.org/en/{}/".format(
+    "latest" if "dev" in __version__ else f"v{__version__}"
+)
+
+
+def online_help(query: str) -> None:
     """
-    Given an OS signal number, returns a signal name.  If the signal
-    number is unknown, returns ``'UNKNOWN'``.
-    """
-    # Since these numbers and names are platform specific, we use the
-    # builtin signal module and build a reverse mapping.
-
-    signal_to_name_map = {
-        k: v for v, k in signal.__dict__.items() if v.startswith("SIG")
-    }
-
-    return signal_to_name_map.get(signum, "UNKNOWN")
-
-
-# _has_hidden_attribute() can be deleted together with deprecated is_path_hidden() and
-# walk_skip_hidden().
-if sys.platform == "win32":
-    import ctypes
-
-    def _has_hidden_attribute(filepath):
-        """
-        Returns True if the given filepath has the hidden attribute on
-        MS-Windows.  Based on a post here:
-        https://stackoverflow.com/questions/284115/cross-platform-hidden-file-detection.
-        """
-        if isinstance(filepath, bytes):
-            filepath = filepath.decode(sys.getfilesystemencoding())
-        try:
-            attrs = ctypes.windll.kernel32.GetFileAttributesW(filepath)
-            result = bool(attrs & 2) and attrs != -1
-        except AttributeError:
-            result = False
-        return result
-
-else:
-
-    def _has_hidden_attribute(filepath):
-        return False
-
-
-@deprecated(since="6.0")
-def is_path_hidden(filepath):
-    """
-    Determines if a given file or directory is hidden.
+    Search the online Astropy documentation for the given query.
+    Opens the results in the default web browser.  Requires an active
+    Internet connection.
 
     Parameters
     ----------
-    filepath : str
-        The path to a file or directory
-
-    Returns
-    -------
-    hidden : bool
-        Returns `True` if the file is hidden
+    query : str
+        The search query.
     """
-    name = os.path.basename(os.path.abspath(filepath))
-    if isinstance(name, bytes):
-        is_dotted = name.startswith(b".")
-    else:
-        is_dotted = name.startswith(".")
-    return is_dotted or _has_hidden_attribute(filepath)
+    import webbrowser
 
-
-@deprecated(since="6.0")
-def walk_skip_hidden(top, onerror=None, followlinks=False):
-    """
-    A wrapper for `os.walk` that skips hidden files and directories.
-
-    This function does not have the parameter ``topdown`` from
-    `os.walk`: the directories must always be recursed top-down when
-    using this function.
-
-    See Also
-    --------
-    os.walk : For a description of the parameters
-    """
-    for root, dirs, files in os.walk(
-        top, topdown=True, onerror=onerror, followlinks=followlinks
-    ):
-        # These lists must be updated in-place so os.walk will skip
-        # hidden directories
-        dirs[:] = [d for d in dirs if not is_path_hidden(d)]
-        files[:] = [f for f in files if not is_path_hidden(f)]
-        yield root, dirs, files
+    webbrowser.open(online_docs_root + f"search.html?{urlencode({'q': query})}")
 
 
 class JsonCustomEncoder(json.JSONEncoder):
@@ -401,9 +357,7 @@ class JsonCustomEncoder(json.JSONEncoder):
 
     """
 
-    def default(self, obj):
-        import numpy as np
-
+    def default(self, obj: object) -> object:
         from astropy import units as u
 
         if isinstance(obj, u.Quantity):
@@ -425,7 +379,7 @@ class JsonCustomEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
-def strip_accents(s):
+def strip_accents(s: str) -> str:
     """
     Remove accents from a Unicode string.
 
@@ -436,7 +390,13 @@ def strip_accents(s):
     )
 
 
-def did_you_mean(s, candidates, n=3, cutoff=0.8, fix=None):
+def did_you_mean(
+    s: str,
+    candidates: Iterable[str],
+    n: int = 3,
+    cutoff: float = 0.8,
+    fix: Callable[[str], list[str]] | None = None,
+) -> str:
     """
     When a string isn't found in a set of candidates, we can be nice
     to provide a list of alternatives in the exception.  This
@@ -446,7 +406,9 @@ def did_you_mean(s, candidates, n=3, cutoff=0.8, fix=None):
     ----------
     s : str
 
-    candidates : sequence of str or dict of str keys
+    candidates : iterable of str
+        Note that str itself does not cause an error, but the output
+        might not be what was expected.
 
     n : int
         The maximum number of results to include.  See
@@ -459,7 +421,7 @@ def did_you_mean(s, candidates, n=3, cutoff=0.8, fix=None):
 
     fix : callable
         A callable to modify the results after matching.  It should
-        take a single string and return a sequence of strings
+        take a single string and return a list of strings
         containing the fixed matches.
 
     Returns
@@ -468,57 +430,39 @@ def did_you_mean(s, candidates, n=3, cutoff=0.8, fix=None):
         Returns the string "Did you mean X, Y, or Z?", or the empty
         string if no alternatives were found.
     """
-    if isinstance(s, str):
-        s = strip_accents(s)
-    s_lower = s.lower()
+    s_lower = strip_accents(s).lower()
 
     # Create a mapping from the lower case name to all capitalization
     # variants of that name.
-    candidates_lower = {}
+    candidates_lower = defaultdict(list)
     for candidate in candidates:
-        candidate_lower = candidate.lower()
-        candidates_lower.setdefault(candidate_lower, [])
-        candidates_lower[candidate_lower].append(candidate)
+        candidates_lower[candidate.lower()].append(candidate)
 
     # The heuristic here is to first try "singularizing" the word.  If
     # that doesn't match anything use difflib to find close matches in
     # original, lower and upper case.
-    if s_lower.endswith("s") and s_lower[:-1] in candidates_lower:
-        matches = [s_lower[:-1]]
-    else:
-        matches = difflib.get_close_matches(
-            s_lower, candidates_lower, n=n, cutoff=cutoff
-        )
+    matches: Iterable[str] = (
+        [s_lower[:-1]]
+        if s_lower.endswith("s") and s_lower[:-1] in candidates_lower
+        else difflib.get_close_matches(s_lower, candidates_lower, n=n, cutoff=cutoff)
+    )
 
-    if len(matches):
-        capitalized_matches = set()
-        for match in matches:
-            capitalized_matches.update(candidates_lower[match])
-        matches = capitalized_matches
-
-        if fix is not None:
-            mapped_matches = []
-            for match in matches:
-                mapped_matches.extend(fix(match))
-            matches = mapped_matches
-
-        matches = list(set(matches))
-        matches = sorted(matches)
-
-        if len(matches) == 1:
-            matches = matches[0]
-        else:
-            matches = ", ".join(matches[:-1]) + " or " + matches[-1]
-        return f"Did you mean {matches}?"
-
-    return ""
+    if not matches:
+        return ""
+    matches = chain.from_iterable(candidates_lower[match] for match in matches)
+    if fix is not None:
+        matches = chain.from_iterable(fix(match) for match in matches)
+    *first_matches, suggestion = sorted(set(matches))
+    if first_matches:
+        suggestion = ", ".join(first_matches) + " or " + suggestion
+    return f"Did you mean {suggestion}?"
 
 
-LOCALE_LOCK = threading.Lock()
+LOCALE_LOCK: Final = threading.Lock()
 
 
 @contextmanager
-def _set_locale(name):
+def _set_locale(name: str) -> Generator[None, None, None]:
     """
     Context manager to temporarily set the locale to ``name``.
 
@@ -551,7 +495,7 @@ def _set_locale(name):
                 locale.setlocale(locale.LC_ALL, saved)
 
 
-def dtype_bytes_or_chars(dtype):
+def dtype_bytes_or_chars(dtype: np.dtype) -> int | None:
     """
     Parse the number out of a dtype.str value like '<U5' or '<f8'.
 

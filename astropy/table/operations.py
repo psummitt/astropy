@@ -10,31 +10,36 @@
 
 import collections
 import itertools
+import warnings
 from collections import Counter, OrderedDict
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from copy import deepcopy
 
 import numpy as np
 
 from astropy.units import Quantity
 from astropy.utils import metadata
+from astropy.utils.compat.optional_deps import HAS_PANDAS, HAS_SCIPY
 from astropy.utils.masked import Masked
 
 from . import _np_utils
-from .np_utils import TableMergeError
 from .table import Column, MaskedColumn, QTable, Row, Table
 
 __all__ = [
-    "join",
-    "setdiff",
     "hstack",
-    "vstack",
-    "unique",
-    "join_skycoord",
+    "join",
     "join_distance",
+    "join_skycoord",
+    "setdiff",
+    "unique",
+    "vstack",
 ]
 
 __doctest_requires__ = {"join_skycoord": ["scipy"], "join_distance": ["scipy"]}
+
+
+class TableMergeError(ValueError):
+    pass
 
 
 def _merge_table_meta(out, tables, metadata_conflicts="warn"):
@@ -274,10 +279,9 @@ def join_distance(distance, kdtree_args=None, query_args=None):
            4    --   0.5
 
     """
-    try:
-        from scipy.spatial import KDTree
-    except ImportError as exc:
-        raise ImportError("scipy is required to use join_distance()") from exc
+    if not HAS_SCIPY:
+        raise ModuleNotFoundError("scipy is required to use join_distance()")
+    from scipy.spatial import KDTree
 
     if kdtree_args is None:
         kdtree_args = {}
@@ -301,9 +305,9 @@ def join_distance(distance, kdtree_args=None, query_args=None):
 
         # Ensure columns are pure np.array and are 2-D for use with KDTree
         if col1.ndim == 1:
-            col1.shape = col1.shape + (1,)
+            col1 = col1.reshape(col1.shape + (1,))
         if col2.ndim == 1:
-            col2.shape = col2.shape + (1,)
+            col2 = col2.reshape(col2.shape + (1,))
 
         # Cross-match col1 and col2 within dist using KDTree
         kd1 = KDTree(col1, **kdtree_args)
@@ -360,10 +364,12 @@ def join(
     *,
     keys_left=None,
     keys_right=None,
+    keep_order=False,
     uniq_col_name="{col_name}_{table_name}",
     table_names=["1", "2"],
     metadata_conflicts="warn",
     join_funcs=None,
+    engine="astropy",
 ):
     """
     Perform a join of the left table with the right table on specified keys.
@@ -385,6 +391,11 @@ def join(
         column-like values with the same lengths as the left table.
     keys_right : str or list of str or list of column-like, optional
         Same as ``keys_left``, but for the right side of the join.
+    keep_order: bool, optional
+        By default, rows are sorted by the join keys. If True, preserve the order of
+        rows from the left table for "inner" or "left" joins, or from the right table
+        for "right" joins. For other join types this argument is ignored except that a
+        warning is issued if ``keep_order=True``.
     uniq_col_name : str or None
         String generate a unique output column name in case of a conflict.
         The default is '{col_name}_{table_name}'.
@@ -399,6 +410,12 @@ def join(
     join_funcs : dict, None
         Dict of functions to use for matching the corresponding key column(s).
         See `~astropy.table.join_skycoord` for an example and details.
+    engine : str
+        The engine to use for the join. Supported values are ``'astropy'``,
+        ``'pandas'``, and ``'auto'``. The default is ``'astropy'`` which uses
+        the implementation in this module. The ``'pandas'`` engine uses the
+        pandas library and is typically faster for large tables. The ``'auto'``
+        engine selects ``'pandas'`` if available, otherwise ``'astropy'``.
 
     Returns
     -------
@@ -411,20 +428,49 @@ def join(
     if not isinstance(right, Table):
         right = Table(right)
 
-    col_name_map = OrderedDict()
-    out = _join(
-        left,
-        right,
-        keys,
-        join_type,
-        uniq_col_name,
-        table_names,
-        col_name_map,
-        metadata_conflicts,
-        join_funcs,
-        keys_left=keys_left,
-        keys_right=keys_right,
-    )
+    # Define a magic key that won't conflict with any user column name. This is to
+    # support the keep_order argument. In this case a temporary column is added to the
+    # left or right table to keep track of the original row order. After joining, the
+    # order is restored and the temporary column is removed.
+    sort_table_index_key = "__astropy_table_keep_order_sort_index__"
+    sort_table = None
+    if keep_order:
+        if join_type not in ["left", "right", "inner"]:
+            # Keep order is not meaningful for an outer join and cartesian join is
+            # already ordered by left (primary) then right (secondary).
+            warnings.warn(
+                "keep_order=True is only supported for left, right, and inner joins",
+                UserWarning,
+                stacklevel=2,
+            )
+        else:
+            sort_table = right if join_type == "right" else left
+            sort_table[sort_table_index_key] = np.arange(len(sort_table))
+
+    # In case keep_order=True we need try/finally to ensure that the temporary column
+    # is removed even if an exception is raised.
+    try:
+        out = _join(
+            left,
+            right,
+            keys,
+            join_type,
+            uniq_col_name,
+            table_names,
+            metadata_conflicts,
+            join_funcs,
+            keys_left=keys_left,
+            keys_right=keys_right,
+            engine=engine,
+        )
+        if sort_table is not None:
+            # Sort joined table to the original order and remove the temporary column.
+            out.sort(sort_table_index_key)
+            del out[sort_table_index_key]
+    finally:
+        if sort_table is not None:
+            # If sort_table is not None that implies keep_order=True.
+            del sort_table[sort_table_index_key]
 
     # Merge the column and table meta data. Table subclasses might override
     # these methods for custom merge behavior.
@@ -602,10 +648,7 @@ def dstack(tables, join_type="outer", metadata_conflicts="warn"):
         # [x x x y y y] => [[x x x],
         #                   [y y y]]
         new_shape = (len(tables), n_row) + col.shape[1:]
-        try:
-            col.shape = (len(tables), n_row) + col.shape[1:]
-        except AttributeError:
-            col = col.reshape(new_shape)
+        col = col.reshape(new_shape)
 
         # Transpose the table and row axes to get to
         # [[x, y],
@@ -678,10 +721,9 @@ def vstack(tables, join_type="outer", metadata_conflicts="warn"):
 
     tables = _get_list_of_tables(tables)  # validates input
     if len(tables) == 1:
-        return tables[0]  # no point in stacking a single table
-    col_name_map = OrderedDict()
+        return tables[0].copy()
 
-    out = _vstack(tables, join_type, col_name_map, metadata_conflicts)
+    out = _vstack(tables, join_type, metadata_conflicts)
 
     # Merge table metadata
     _merge_table_meta(out, tables, metadata_conflicts=metadata_conflicts)
@@ -761,9 +803,8 @@ def hstack(
     tables = _get_list_of_tables(tables)  # validates input
     if len(tables) == 1:
         return tables[0]  # no point in stacking a single table
-    col_name_map = OrderedDict()
 
-    out = _hstack(tables, join_type, uniq_col_name, table_names, col_name_map)
+    out = _hstack(tables, join_type, uniq_col_name, table_names)
 
     _merge_table_meta(out, tables, metadata_conflicts=metadata_conflicts)
 
@@ -772,7 +813,7 @@ def hstack(
 
 def unique(input_table, keys=None, silent=False, keep="first"):
     """
-    Returns the unique rows of a table.
+    Return a new table with unique rows, sorted by ``keys``.
 
     Parameters
     ----------
@@ -978,7 +1019,7 @@ def get_descrs(arrays, col_name_map):
 
         # Output dtype is the superset of all dtypes in in_arrays
         try:
-            dtype = common_dtype(in_cols)
+            dtype = result_type(in_cols)
         except TableMergeError as tme:
             # Beautify the error message when we are trying to merge columns with incompatible
             # types by including the name of the columns that originated the error.
@@ -1000,7 +1041,7 @@ def get_descrs(arrays, col_name_map):
     return out_descrs
 
 
-def common_dtype(cols):
+def result_type(cols):
     """
     Use numpy to find the common dtype for a list of columns.
 
@@ -1008,19 +1049,51 @@ def common_dtype(cols):
     np.bool_, np.object_, np.number, np.character, np.void
     """
     try:
-        return metadata.common_dtype(cols)
+        return metadata.utils.result_type(cols)
     except metadata.MergeConflictError as err:
         tme = TableMergeError(f"Columns have incompatible types {err._incompat_types}")
         tme._incompat_types = err._incompat_types
         raise tme from err
 
 
-def _get_join_sort_idxs(keys, left, right):
-    # Go through each of the key columns in order and make columns for
-    # a new structured array that represents the lexical ordering of those
-    # key columns. This structured array is then argsort'ed. The trick here
-    # is that some columns (e.g. Time) may need to be expanded into multiple
-    # columns for ordering here.
+def _get_join_sortable_arrays(keys: list[str], left: "Table", right: "Table"):
+    """Get sortable key arrays used to build join index inputs.
+
+    For each join key column, this helper calls ``Column.info.get_sortable_arrays()`` on
+    both tables to obtain one or more 1-D arrays that represent lexical sort order for
+    that key. Some key column types expand into multiple sortable arrays.
+
+    Parameters
+    ----------
+    keys : list[str]
+        Join key column names.
+    left : Table
+        Left input table.
+    right : Table
+        Right input table.
+
+    Returns
+    -------
+    sort_keys_dtypes : list[tuple[str, dtype]]
+        Structured-dtype specification for sortable key fields.
+    sort_keys : list[str]
+        Generated sortable key field names (``"0"``, ``"1"``, ...).
+    sort_left : dict[str, ndarray]
+        Mapping of sortable key field name to 1-D array for ``left``.
+    sort_right : dict[str, ndarray]
+        Mapping of sortable key field name to 1-D array for ``right``.
+
+    Raises
+    ------
+    TypeError
+        If any key column is not sortable.
+    RuntimeError
+        If left/right sortable array shapes or expansion lengths differ.
+    ValueError
+        If any sortable key array is not 1-D.
+    """
+    # Go through each of the key columns in order and make columns for that represent
+    # the lexical ordering of those key columns.
 
     ii = 0  # Index for uniquely naming the sort columns
     # sortable_table dtypes as list of (name, dtype_str, shape) tuples
@@ -1033,8 +1106,11 @@ def _get_join_sort_idxs(keys, left, right):
         # get_sortable_arrays() returns a list of ndarrays that can be lexically
         # sorted to represent the order of the column. In most cases this is just
         # a single element of the column itself.
-        left_sort_cols = left[key].info.get_sortable_arrays()
-        right_sort_cols = right[key].info.get_sortable_arrays()
+        try:
+            left_sort_cols = left[key].info.get_sortable_arrays()
+            right_sort_cols = right[key].info.get_sortable_arrays()
+        except NotImplementedError as err:
+            raise TypeError("one or more key columns are not sortable") from err
 
         if len(left_sort_cols) != len(right_sort_cols):
             # Should never happen because cols are screened beforehand for compatibility
@@ -1055,9 +1131,46 @@ def _get_join_sort_idxs(keys, left, right):
             sort_right[sort_key] = right_sort_col
 
             # Build up dtypes for the structured array that gets sorted.
-            dtype_str = common_dtype([left_sort_col, right_sort_col])
+            dtype_str = result_type([left_sort_col, right_sort_col])
             sort_keys_dtypes.append((sort_key, dtype_str))
             ii += 1
+
+    return sort_keys_dtypes, sort_keys, sort_left, sort_right
+
+
+def _get_join_sort_idxs(keys, left, right):
+    """Compute sorted-row and group-boundary indices for join keys.
+
+    This helper builds sortable key arrays for ``left`` and ``right``, combines them
+    into a single structured array, and sorts that array lexically by key. It then
+    identifies boundaries between unique key groups in the sorted result.
+
+    Parameters
+    ----------
+    keys : list[str]
+        Join key column names.
+    left : Table
+        Left input table.
+    right : Table
+        Right input table.
+
+    Returns
+    -------
+    idxs : ndarray
+        Indices of key-group boundaries in the sorted combined table, including
+        leading 0 and trailing ``len(sorted_table)`` sentinels.
+    idx_sort : ndarray
+        Row indices that sort the concatenated rows from ``left`` then ``right``
+        by join key.
+    """
+    # Go through each of the key columns in order and make columns for
+    # a new structured array that represents the lexical ordering of those
+    # key columns. This structured array is then argsort'ed. The trick here
+    # is that some columns (e.g. Time) may need to be expanded into multiple
+    # columns for ordering here.
+    sort_keys_dtypes, sort_keys, sort_left, sort_right = _get_join_sortable_arrays(
+        keys, left, right
+    )
 
     # Make the empty sortable table and fill it
     len_left = len(left)
@@ -1066,8 +1179,14 @@ def _get_join_sort_idxs(keys, left, right):
         sortable_table[key][:len_left] = sort_left[key]
         sortable_table[key][len_left:] = sort_right[key]
 
-    # Finally do the (lexical) argsort and make a new sorted version
-    idx_sort = sortable_table.argsort(order=sort_keys)
+    # Finally do the argsort and make a new sorted version. For a single key it is much
+    # faster to argsort the column directly instead of a lexical sort using a structured
+    # array. In this case force a (slightly slower) stable sort for back-compatibility
+    # with the original behavior from argsort(order=sort_keys).
+    if len(sort_keys) == 1:
+        idx_sort = np.argsort(sortable_table[sort_keys[0]], kind="stable")
+    else:
+        idx_sort = sortable_table.argsort(order=sort_keys)
     sorted_table = sortable_table[idx_sort]
 
     # Get indexes of unique elements (i.e. the group boundaries)
@@ -1097,6 +1216,42 @@ def _apply_join_funcs(left, right, keys, join_funcs):
     return left, right, keys
 
 
+def _select_join_engine(engine: str):
+    """Select the concrete join engine from a user request.
+
+    Parameters
+    ----------
+    engine : str
+        Requested engine. Allowed values are ``"astropy"``, ``"pandas"``,
+        and ``"auto"``.
+
+    Returns
+    -------
+    engine : str
+        Concrete engine name (``"astropy"`` or ``"pandas"``).
+    compute_join_indices : callable
+        Function used to compute row index arrays and masks for the selected
+        engine.
+
+    Raises
+    ------
+    ValueError
+        If ``engine`` is not one of the supported values.
+    """
+    if engine == "auto":
+        engine = "pandas" if HAS_PANDAS else "astropy"
+
+    if engine not in ("astropy", "pandas"):
+        raise ValueError(f"Invalid join engine: {engine!r}")
+
+    compute_join_indices = {
+        "astropy": _compute_join_indices_astropy,
+        "pandas": _compute_join_indices_pandas,
+    }[engine]
+
+    return engine, compute_join_indices
+
+
 def _join(
     left,
     right,
@@ -1104,11 +1259,11 @@ def _join(
     join_type="inner",
     uniq_col_name="{col_name}_{table_name}",
     table_names=["1", "2"],
-    col_name_map=None,
     metadata_conflicts="warn",
     join_funcs=None,
     keys_left=None,
     keys_right=None,
+    engine="astropy",
 ):
     """
     Perform a join of the left and right Tables on specified keys.
@@ -1130,9 +1285,6 @@ def _join(
     table_names : list of str or None
         Two-element list of table names used when generating unique output
         column names.  The default is ['1', '2'].
-    col_name_map : empty dict or None
-        If passed as a dict then it will be updated in-place with the
-        mapping of output to input column names.
     metadata_conflicts : str
         How to proceed with metadata conflicts. This should be one of:
             * ``'silent'``: silently pick the last conflicting meta-data value
@@ -1141,15 +1293,18 @@ def _join(
     join_funcs : dict, None
         Dict of functions to use for matching the corresponding key column(s).
         See `~astropy.table.join_skycoord` for an example and details.
+    engine : str
+        The engine to use for the join. Supported values are ``'astropy'``,
+        ``'pandas'``, and ``'auto'``. The default is ``'astropy'`` which uses
+        the implementation in this module. The ``'pandas'`` engine uses the
+        pandas library and is typically faster for large tables. The ``'auto'``
+        engine selects ``'pandas'`` if available, otherwise ``'astropy'``.
 
     Returns
     -------
     joined_table : `~astropy.table.Table` object
         New table containing the result of the join operation.
     """
-    # Store user-provided col_name_map until the end
-    _col_name_map = col_name_map
-
     # Special column name for cartesian join, should never collide with real column
     cartesian_index_name = "__table_cartesian_join_temp_index__"
 
@@ -1220,10 +1375,11 @@ def _join(
     if len_left == 0 or len_right == 0:
         raise ValueError("input tables for join must both have at least one row")
 
-    try:
-        idxs, idx_sort = _get_join_sort_idxs(keys, left, right)
-    except NotImplementedError:
-        raise TypeError("one or more key columns are not sortable")
+    engine, compute_join_indices = _select_join_engine(engine)
+
+    masked, n_out, left_out, left_mask, right_out, right_mask = compute_join_indices(
+        left, right, keys, join_type, len_left
+    )
 
     # Now that we have idxs and idx_sort, revert to the original table args to
     # carry on with making the output joined table. `keys` is set to an empty
@@ -1238,18 +1394,9 @@ def _join(
     col_name_map = get_col_name_map([left, right], keys, uniq_col_name, table_names)
     out_descrs = get_descrs([left, right], col_name_map)
 
-    # Main inner loop in Cython to compute the cartesian product
-    # indices for the given join type
-    int_join_type = {"inner": 0, "outer": 1, "left": 2, "right": 3, "cartesian": 1}[
-        join_type
-    ]
-    masked, n_out, left_out, left_mask, right_out, right_mask = _np_utils.join_inner(
-        idxs, idx_sort, len_left, int_join_type
-    )
-
     out = _get_out_class([left, right])()
 
-    for out_name, dtype, shape in out_descrs:
+    for out_name, _dtype, _shape in out_descrs:
         if out_name == cartesian_index_name:
             continue
 
@@ -1301,7 +1448,8 @@ def _join(
             # array_mask is 1-d corresponding to length of output column.  We need
             # make it have the correct shape for broadcasting, i.e. (length, 1, 1, ..).
             # Mixin columns might not have ndim attribute so use len(col.shape).
-            array_mask.shape = (col.shape[0],) + (1,) * (len(col.shape) - 1)
+            new_shape = (col.shape[0],) + (1,) * (len(col.shape) - 1)
+            array_mask = array_mask.reshape(new_shape)
 
             # Now broadcast to the correct final shape
             array_mask = np.broadcast_to(array_mask, col.shape)
@@ -1317,11 +1465,125 @@ def _join(
         # Set the output table column to the new joined column
         out[out_name] = col
 
-    # If col_name_map supplied as a dict input, then update.
-    if isinstance(_col_name_map, Mapping):
-        _col_name_map.update(col_name_map)
-
     return out
+
+
+def _compute_join_indices_astropy(left, right, keys, join_type, len_left):
+    """Compute row index arrays and masks for joins using the astropy engine.
+
+    This helper sorts the concatenated join keys from ``left`` and ``right`` to
+    identify matching groups, then delegates to ``_np_utils.join_inner`` to
+    build output row indices and masks for the requested join type.
+
+    Parameters
+    ----------
+    left : Table
+        Left input table.
+    right : Table
+        Right input table.
+    keys : tuple[str]
+        Join key column names.
+    join_type : {'inner', 'outer', 'left', 'right', 'cartesian'}
+        Requested join type.
+    len_left : int
+        Number of rows in ``left``.
+
+    Returns
+    -------
+    masked : bool
+        Whether any output columns require masking due to missing side rows.
+    n_out : int
+        Number of output rows.
+    left_out : ndarray
+        Row indices into ``left`` for each output row.
+    left_mask : ndarray
+        Boolean mask indicating output rows without a matching ``left`` row.
+    right_out : ndarray
+        Row indices into ``right`` for each output row.
+    right_mask : ndarray
+        Boolean mask indicating output rows without a matching ``right`` row.
+    """
+    idxs, idx_sort = _get_join_sort_idxs(keys, left, right)
+
+    # Main inner loop in Cython to compute the cartesian product
+    # indices for the given join type
+    int_join_type = {"inner": 0, "outer": 1, "left": 2, "right": 3, "cartesian": 1}[
+        join_type
+    ]
+    masked, n_out, left_out, left_mask, right_out, right_mask = _np_utils.join_inner(
+        idxs, idx_sort, len_left, int_join_type
+    )
+
+    return masked, n_out, left_out, left_mask, right_out, right_mask
+
+
+def _compute_join_indices_pandas(left, right, keys, join_type, len_left):
+    """Compute row index arrays and masks for joins using the pandas engine.
+
+    This helper uses pandas.merge() to do the work. It is typically faster than the
+    astropy engine for large tables, but requires the pandas library.
+
+    Parameters
+    ----------
+    left : Table
+        Left input table.
+    right : Table
+        Right input table.
+    keys : tuple[str]
+        Join key column names.
+    join_type : {'inner', 'outer', 'left', 'right', 'cartesian'}
+        Requested join type.
+    len_left : int
+        Number of rows in ``left``.
+
+    Returns
+    -------
+    masked : bool
+        Whether any output columns require masking due to missing side rows.
+    n_out : int
+        Number of output rows.
+    left_out : ndarray
+        Row indices into ``left`` for each output row.
+    left_mask : ndarray
+        Boolean mask indicating output rows without a matching ``left`` row.
+    right_out : ndarray
+        Row indices into ``right`` for each output row.
+    right_mask : ndarray
+        Boolean mask indicating output rows without a matching ``right`` row.
+    """
+    if not HAS_PANDAS:
+        raise ImportError("pandas library is required for pandas join engine")
+    import pandas as pd
+
+    _, sort_keys, sort_left, sort_right = _get_join_sortable_arrays(keys, left, right)
+
+    left_pd = pd.DataFrame(sort_left)
+    left_pd["idx_left"] = pd.Series(np.arange(len(left_pd)), dtype=pd.Int64Dtype())
+    right_pd = pd.DataFrame(sort_right)
+    right_pd["idx_right"] = pd.Series(np.arange(len(right_pd)), dtype=pd.Int64Dtype())
+
+    # Cartesian join is handled differently in pandas
+    kwargs = (
+        {"how": "cross"}
+        if join_type == "cartesian"
+        else {"on": sort_keys, "how": join_type}
+    )
+
+    merged = pd.merge(
+        left_pd,
+        right_pd,
+        sort=False,
+        **kwargs,
+    )
+
+    left_out = np.asarray(merged["idx_left"].fillna(0))
+    right_out = np.asarray(merged["idx_right"].fillna(0))
+    left_mask = merged["idx_left"].isna().values
+    right_mask = merged["idx_right"].isna().values
+    masked = right_mask.any() or left_mask.any()
+    n_out = len(merged)
+
+    return masked, n_out, left_out, left_mask, right_out, right_mask
 
 
 def _join_keys_left_right(left, right, keys, keys_left, keys_right, join_funcs):
@@ -1402,7 +1664,7 @@ def _check_join_type(join_type, func_name):
         raise ValueError("`join_type` arg must be one of 'inner', 'exact' or 'outer'")
 
 
-def _vstack(arrays, join_type="outer", col_name_map=None, metadata_conflicts="warn"):
+def _vstack(arrays, join_type="outer", metadata_conflicts="warn"):
     """
     Stack Tables vertically (by rows).
 
@@ -1419,18 +1681,12 @@ def _vstack(arrays, join_type="outer", col_name_map=None, metadata_conflicts="wa
         Tables to stack by rows (vertically)
     join_type : str
         Join type ('inner' | 'exact' | 'outer'), default is 'outer'
-    col_name_map : empty dict or None
-        If passed as a dict then it will be updated in-place with the
-        mapping of output to input column names.
 
     Returns
     -------
     stacked_table : `~astropy.table.Table` object
         New table containing the stacked data from the input tables.
     """
-    # Store user-provided col_name_map until the end
-    _col_name_map = col_name_map
-
     # Trivial case of one input array
     if len(arrays) == 1:
         return arrays[0]
@@ -1509,10 +1765,6 @@ def _vstack(arrays, join_type="outer", col_name_map=None, metadata_conflicts="wa
 
         out[out_name] = col
 
-    # If col_name_map supplied as a dict input, then update.
-    if isinstance(_col_name_map, Mapping):
-        _col_name_map.update(col_name_map)
-
     return out
 
 
@@ -1521,7 +1773,6 @@ def _hstack(
     join_type="outer",
     uniq_col_name="{col_name}_{table_name}",
     table_names=None,
-    col_name_map=None,
 ):
     """
     Stack tables horizontally (by columns).
@@ -1550,9 +1801,6 @@ def _hstack(
     stacked_table : `~astropy.table.Table` object
         New table containing the stacked data from the input tables.
     """
-    # Store user-provided col_name_map until the end
-    _col_name_map = col_name_map
-
     if table_names is None:
         table_names = [f"{ii + 1}" for ii in range(len(arrays))]
     if len(arrays) != len(table_names):
@@ -1618,9 +1866,5 @@ def _hstack(
                 col = array[name][:n_rows]
 
             out[out_name] = col
-
-    # If col_name_map supplied as a dict input, then update.
-    if isinstance(_col_name_map, Mapping):
-        _col_name_map.update(col_name_map)
 
     return out

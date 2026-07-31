@@ -14,13 +14,11 @@ import operator
 
 import numpy as np
 
-from astropy.units import MagUnit, Quantity
-from astropy.utils import isiterable
-from astropy.utils.compat import COPY_IF_NEEDED
+from astropy.units import MagUnit, Quantity, dimensionless_unscaled
 
 from .utils import array_repr_oneline, get_inputs_and_params
 
-__all__ = ["Parameter", "InputParameterError", "ParameterError"]
+__all__ = ["InputParameterError", "Parameter", "ParameterError"]
 
 
 class ParameterError(Exception):
@@ -37,7 +35,7 @@ class ParameterDefinitionError(ParameterError):
 
 def _tofloat(value):
     """Convert a parameter to float or float array."""
-    if isiterable(value):
+    if np.iterable(value):
         try:
             value = np.asanyarray(value, dtype=float)
         except (TypeError, ValueError):
@@ -121,21 +119,19 @@ class Parameter:
     This class represents a model's parameter (in a somewhat broad sense). It
     serves a number of purposes:
 
-    1) A type to be recognized by models and treated specially at class
-    initialization (i.e., if it is found that there is a class definition
-    of a Parameter, the model initializer makes a copy at the instance level).
+    #. A type to be recognized by models and treated specially at class
+       initialization (i.e., if it is found that there is a class definition
+       of a Parameter, the model initializer makes a copy at the instance level).
 
-    2) Managing the handling of allowable parameter values and once defined,
-    ensuring updates are consistent with the Parameter definition. This
-    includes the optional use of units and quantities as well as transforming
-    values to an internally consistent representation (e.g., from degrees to
-    radians through the use of getters and setters).
+    #. Managing the handling of allowable parameter values and once defined,
+       ensuring updates are consistent with the Parameter definition. This
+       includes the optional use of units and quantities as well as transforming
+       values to an internally consistent representation (e.g., from degrees to
+       radians through the use of getters and setters).
 
-    3) Holding attributes of parameters relevant to fitting, such as whether
-    the parameter may be varied in fitting, or whether there are constraints
-    that must be satisfied.
-
-
+    #. Holding attributes of parameters relevant to fitting, such as whether
+       the parameter may be varied in fitting, or whether there are constraints
+       that must be satisfied.
 
     See :ref:`astropy:modeling-parameters` for more details.
 
@@ -245,6 +241,7 @@ class Parameter:
         # use this to convert to and from the public unit defined for the
         # parameter.
         self._internal_unit = None
+        self._internal_value = None
         if not self._model_required:
             if self._default is not None:
                 self.value = self._default
@@ -317,7 +314,7 @@ class Parameter:
         args = f"'{self._name}'"
         args += f", value={self.value}"
 
-        if self.unit is not None:
+        if self.unit is not None and self.unit != dimensionless_unscaled:
             args += f", unit={self.unit}"
 
         for cons in self.constraints:
@@ -357,7 +354,7 @@ class Parameter:
             else:
                 value = self._getter(self._internal_value)
 
-        if value.size == 1:
+        if value is not None and value.size == 1:
             # return scalar number as np.float64 object
             return np.float64(value.item())
 
@@ -468,7 +465,7 @@ class Parameter:
             if value not in ((), (1,)):
                 raise ValueError("Cannot assign this shape to a scalar quantity")
         else:
-            self.value.shape = value
+            self.value = np.reshape(self.value, value)
 
     @property
     def size(self):
@@ -732,7 +729,7 @@ class Parameter:
 
         return wrapper
 
-    def __array__(self, dtype=None, copy=COPY_IF_NEEDED):
+    def __array__(self, dtype=None, copy=None):
         # Make np.asarray(self) work a little more straightforwardly
         arr = np.asarray(self.value, dtype=dtype)
 
@@ -770,7 +767,7 @@ def param_repr_oneline(param):
     rendering parameters with units like quantities.
     """
     out = array_repr_oneline(param.value)
-    if param.unit is not None:
+    if param.unit is not None and param.unit != dimensionless_unscaled:
         out = f"{out} {param.unit!s}"
     return out
 
@@ -783,6 +780,12 @@ def _wrap_ufunc(ufunc):
             orig_unit is the value after the ufunc has been applied
             it is assumed ufunc(raw_unit) == orig_unit
         """
+        # Make sure value is ufunc compatible
+        #   parameters are expected to be real floats
+        # If the value is `None` this will result in a NaN
+        if not isinstance(value, Quantity):
+            value = np.float64(value)
+
         if orig_unit is not None:
             return ufunc(value) * orig_unit
         elif raw_unit is not None:

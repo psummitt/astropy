@@ -1,6 +1,7 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
 
+import sys
 from io import StringIO
 from shutil import get_terminal_size
 
@@ -10,8 +11,10 @@ import pytest
 from astropy import table
 from astropy import units as u
 from astropy.io import ascii
-from astropy.table import QTable, Table
+from astropy.table import Column, QTable, Table
 from astropy.table.table_helpers import simple_table
+from astropy.utils.console import conf as console_conf
+from astropy.utils.exceptions import AstropyDeprecationWarning
 
 BIG_WIDE_ARR = np.arange(2000, dtype=np.float64).reshape(100, 20)
 SMALL_ARR = np.arange(18, dtype=np.int64).reshape(6, 3)
@@ -161,7 +164,11 @@ class TestPprint:
         """
         self._setup(table_type)
         arr = np.arange(4000, dtype=np.float64).reshape(100, 40)
-        lines = table_type(arr).pformat()
+        with (
+            console_conf.set_temp("max_width", None),
+            console_conf.set_temp("max_lines", None),
+        ):
+            lines = table_type(arr).pformat(max_lines=None, max_width=None)
         width, nlines = get_terminal_size()
         assert len(lines) == nlines
         for line in lines[:-1]:  # skip last "Length = .. rows" line
@@ -302,7 +309,14 @@ class TestPprint:
     def test_pformat_all(self, table_type):
         """Test that all rows are printed by default"""
         self._setup(table_type)
-        lines = self.tb.pformat_all()
+        with pytest.warns(
+            AstropyDeprecationWarning,
+            match=(
+                r"The pformat_all function is deprecated "
+                r"and may be removed in a future version\."
+            ),
+        ):
+            lines = self.tb.pformat_all()
         # +3 accounts for the three header lines in this  table
         assert len(lines) == BIG_WIDE_ARR.shape[0] + 3
 
@@ -313,6 +327,40 @@ class TestPprint:
         (out, err) = capsys.readouterr()
         # +3 accounts for the three header lines in this  table
         assert len(out.splitlines()) == BIG_WIDE_ARR.shape[0] + 3
+
+
+class TestPprintColumn:
+    @pytest.mark.parametrize(
+        "scalar, exp",
+        [
+            (
+                1,
+                [
+                    "None",
+                    "----",
+                    "   1",
+                ],
+            ),
+            (
+                u.Quantity(0.6, "eV"),
+                [
+                    "None",
+                    "----",
+                    " 0.6",
+                ],
+            ),
+        ],
+    )
+    def test_pprint_scalar(self, scalar, exp):
+        # see https://github.com/astropy/astropy/issues/12584
+        c = Column(scalar)
+
+        # Make sure pprint() does not raise an exception
+        c.pprint()
+
+        # Check actual output
+        out = c.pformat()
+        assert out == exp
 
 
 @pytest.mark.usefixtures("table_type")
@@ -348,9 +396,7 @@ class TestFormat:
         assert t["a"].format == "%4.2f {0:}"  # format did not change
 
     def test_column_format_with_threshold(self, table_type):
-        from astropy import conf
-
-        with conf.set_temp("max_lines", 8):
+        with console_conf.set_temp("max_lines", 8):
             t = table_type([np.arange(20)], names=["a"])
             t["a"].format = "%{0:}"
             assert str(t["a"]).splitlines() == [
@@ -477,9 +523,7 @@ class TestFormatWithMaskedElements:
         assert str(t["a"]) == "   a   \n-------\n     --\n%4.2f 2\n     --"
 
     def test_column_format_with_threshold_masked_table(self):
-        from astropy import conf
-
-        with conf.set_temp("max_lines", 8):
+        with console_conf.set_temp("max_lines", 8):
             t = Table([np.arange(20)], names=["a"], masked=True)
             t["a"].format = "%{0:}"
             t["a"].mask[0] = True
@@ -658,7 +702,7 @@ def test_pprint_structured_with_format():
         "  1    1.23 -20.0 003 bar ",
         "  2   12.35   4.6 033 foo ",
     ]
-    assert t.pformat_all() == exp
+    assert t.pformat() == exp
 
 
 def test_pprint_nameless_col():
@@ -997,26 +1041,26 @@ class TestColumnsShowHide:
         ]
 
         with t.pprint_exclude_names.set(["a", "c"]):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
         with t.pprint_include_names.set(["b", "d"]):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
         with t.pprint_exclude_names.set(["a", "c"]):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
         with t.pprint_include_names.set(["b", "d"]):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
         with (
             t.pprint_include_names.set(["b", "c", "d"]),
             t.pprint_exclude_names.set(["c"]),
         ):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
     def test_output_globs(self):
@@ -1032,7 +1076,7 @@ class TestColumnsShowHide:
             "  1   1   2",
         ]
         with t.pprint_include_names.set("a*"):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
         # Show a* but exclude a??
@@ -1042,7 +1086,7 @@ class TestColumnsShowHide:
             "  1   1",
         ]
         with t.pprint_include_names.set("a*"), t.pprint_exclude_names.set("a??"):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
         # Exclude a??
@@ -1052,7 +1096,7 @@ class TestColumnsShowHide:
             "  1   2   3   4   1",
         ]
         with t.pprint_exclude_names.set("a??"):
-            out = t.pformat_all()
+            out = t.pformat()
         assert out == exp
 
 
@@ -1070,7 +1114,7 @@ def test_embedded_newline_tab():
         r"   a b \n c \t \n d",
         r"   x            y\n",
     ]
-    assert t.pformat_all() == exp
+    assert t.pformat() == exp
 
 
 def test_multidims_with_zero_dim():
@@ -1085,4 +1129,137 @@ def test_multidims_with_zero_dim():
         "   a             ",
         "   b             ",
     ]
-    assert t.pformat_all(show_dtype=True) == exp
+    assert t.pformat(show_dtype=True) == exp
+
+
+def test_zero_length_string():
+    data = np.array([("", 12)], dtype=[("a", "S"), ("b", "i4")])
+    t = Table(data, copy=False)
+    exp = [
+        "  a      b  ",
+        "bytes0 int32",
+        "------ -----",
+        "          12",
+    ]
+    assert t.pformat(show_dtype=True) == exp
+
+
+def test_multidim_threshold_default():
+    """Test default behavior (threshold=1) shows only first and last elements"""
+    # Default threshold is 1, so size > 1 will show "first .. last"
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 1):
+        data = np.array([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]])
+        col = Column(data, name="test")
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert [line.strip() for line in lines] == ["1 .. 5", "6 .. 10"]
+
+
+def test_multidim_threshold_show_all():
+    """Test large threshold shows all elements"""
+    # Use sys.maxsize or a large value to show all elements
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", sys.maxsize):
+        data = np.array([[1, 2, 3, 4, 5], [6, 7, 8, 9, 10]])
+        col = Column(data, name="test")
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert [line.strip() for line in lines] == ["[1 2 3 4 5]", "[6 7 8 9 10]"]
+
+
+def test_multidim_threshold_partial():
+    """Test threshold shows elements with ellipsis when size > threshold"""
+    # Size is 10 (10 elements in the array), threshold is 4
+    # Since 10 > 4, should show "first .. last"
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 4):
+        data = np.array([[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]])
+        col = Column(data, name="test")
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert [line.strip() for line in lines] == ["0 .. 9"]
+
+
+def test_multidim_threshold_three_vectors():
+    """Test threshold=3 for 3-element vectors (common use case)"""
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 3):
+        data = np.array([[1, 2, 3], [4, 5, 6]])
+        col = Column(data, name="position")
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert lines == ["[1 2 3]", "[4 5 6]"]
+
+
+def test_multidim_threshold_with_formatting():
+    """Test threshold works with column formatting"""
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", sys.maxsize):
+        data = np.array([[1.23456, 2.34567, 3.45678]], dtype=float)
+        col = Column(data, name="float", format="%.2f")
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert lines == ["[1.23 2.35 3.46]"]
+
+
+def test_multidim_threshold_2x3_array():
+    """Test 2x3 array display with different thresholds"""
+    # 2x3 array has size = 2*3 = 6
+    data = np.array([[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]])
+    col = Column(data, name="test")
+
+    # With threshold=1, size=6 > 1, so show "first .. last"
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 1):
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert [line.strip() for line in lines] == ["1 .. 6", "7 .. 12"]
+
+    # With threshold=6, size=6 <= 6, so show full element
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 6):
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert [line.strip() for line in lines] == [
+            "[[1 2 3] [4 5 6]]",
+            "[[7 8 9] [10 11 12]]",
+        ]
+
+    # With threshold=5, size=6 > 5, so show "first .. last"
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 5):
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert [line.strip() for line in lines] == ["1 .. 6", "7 .. 12"]
+
+
+def test_multidim_threshold_3d_array():
+    """Test 3D array display.
+
+    Each table element has shape (2, 3, 2); the full column shape is (2, 2, 3, 2)
+    where the first dimension (2) is the number of rows, and the remaining dimensions
+    (2, 3, 2) define the shape of each element. Size = 2*3*2 = 12.
+    """
+    data = np.arange(2 * 2 * 3 * 2).reshape(2, 2, 3, 2)
+    col = Column(data, name="test")
+
+    # With threshold=1, size=12 > 1, so show "first .. last"
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 1):
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert [line.strip() for line in lines] == ["0 .. 11", "12 .. 23"]
+
+    # With threshold=12, size=12 <= 12, so show full element with brackets
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 12):
+        lines = col.pformat(show_name=False, show_unit=False)
+        # Each row has shape (2, 3, 2) = [[[0,1] [2,3] [4,5]] [[6,7] [8,9] [10,11]]]
+        assert [line.strip() for line in lines] == [
+            "[[[0 1] [2 3] [4 5]] [[6 7] [8 9] [10 11]]]",
+            "[[[12 13] [14 15] [16 17]] [[18 19] [20 21] [22 23]]]",
+        ]
+
+
+def test_multidim_threshold_2x2_array_with_threshold_4():
+    """Test that 2x2 array (size=4) is fully shown when threshold=4"""
+    data = np.array([[[1, 2], [3, 4]], [[5, 6], [7, 8]]])
+    col = Column(data, name="test")
+
+    # With threshold=4, size=4 <= 4, so show full element
+    # Uses astropy.table.conf.format_size_threshold
+    with table.conf.set_temp("format_size_threshold", 4):
+        lines = col.pformat(show_name=False, show_unit=False)
+        assert lines == ["[[1 2] [3 4]]", "[[5 6] [7 8]]"]

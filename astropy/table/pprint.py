@@ -8,7 +8,7 @@ from shutil import get_terminal_size
 
 import numpy as np
 
-from astropy import log
+from astropy import log, table
 from astropy.utils.console import Getch, color_print, conf
 from astropy.utils.data_info import dtype_info_name
 
@@ -58,7 +58,7 @@ def get_auto_format_func(
 
     Parameters
     ----------
-    col_name : object, optional
+    col : object, optional
         Hashable object to identify column like id or name. Default is None.
 
     possible_string_format_functions : func, optional
@@ -176,12 +176,12 @@ class TableFormatter:
         If no value of ``max_lines`` is supplied then the height of the
         screen terminal is used to set ``max_lines``.  If the terminal
         height cannot be determined then the default will be determined
-        using the ``astropy.table.conf.max_lines`` configuration item. If a
+        using the ``astropy.console.max_lines`` console configuration item. If a
         negative value of ``max_lines`` is supplied then there is no line
         limit applied.
 
         The same applies for max_width except the configuration item is
-        ``astropy.table.conf.max_width``.
+        ``astropy.console.conf.max_width``.
 
         Parameters
         ----------
@@ -329,7 +329,7 @@ class TableFormatter:
             if outs["i_dashes"] is not None:
                 col_strs[outs["i_dashes"]] = "-" * col_width
 
-            # Format columns according to alignment.  `align` arg has precedent, otherwise
+            # Format columns according to alignment.  `align` arg has precedence, otherwise
             # use `col.format` if it starts as a legal alignment string.  If neither applies
             # then right justify.
             re_fill_align = re.compile(r"(?P<fill>.?)(?P<align>[<^>=])")
@@ -449,7 +449,10 @@ class TableFormatter:
             i_centers.append(n_header)
             n_header += 1
             if dtype is not None:
-                col_dtype = dtype_info_name((dtype, multidims))
+                # For zero-length strings, np.dtype((dtype, ())) does not work;
+                # see https://github.com/numpy/numpy/issues/27301
+                # As a work-around, just omit the shape if there is none.
+                col_dtype = dtype_info_name((dtype, multidims) if multidims else dtype)
             else:
                 col_dtype = col.__class__.__qualname__ or "object"
             yield col_dtype
@@ -460,7 +463,13 @@ class TableFormatter:
 
         max_lines -= n_header
         n_print2 = max_lines // 2
-        n_rows = len(col)
+        try:
+            n_rows = len(col)
+        except TypeError:
+            is_scalar = True
+            n_rows = 1
+        else:
+            is_scalar = False
 
         # This block of code is responsible for producing the function that
         # will format values for this column.  The ``format_func`` function
@@ -498,34 +507,51 @@ class TableFormatter:
         auto_format_func = get_auto_format_func(col, pssf)
         format_func = col.info._format_funcs.get(col_format, auto_format_func)
 
-        if len(col) > max_lines:
+        if n_rows > max_lines:
             if show_length is None:
                 show_length = True
             i0 = n_print2 - (1 if show_length else 0)
             i1 = n_rows - n_print2 - max_lines % 2
-            indices = np.concatenate(
-                [np.arange(0, i0 + 1), np.arange(i1 + 1, len(col))]
-            )
+            indices = np.concatenate([np.arange(0, i0 + 1), np.arange(i1 + 1, n_rows)])
         else:
             i0 = -1
-            indices = np.arange(len(col))
+            indices = np.arange(n_rows)
 
         def format_col_str(idx):
-            if multidims:
-                # Prevents columns like Column(data=[[(1,)],[(2,)]], name='a')
-                # with shape (n,1,...,1) from being printed as if there was
-                # more than one element in a row
-                if multidims_all_ones:
-                    return format_func(col_format, col[(idx,) + multidim0])
-                elif multidims_has_zero:
-                    # Any zero dimension means there is no data to print
-                    return ""
-                else:
-                    left = format_func(col_format, col[(idx,) + multidim0])
-                    right = format_func(col_format, col[(idx,) + multidim1])
-                    return f"{left} .. {right}"
+            if not multidims:
+                return format_func(col_format, col if is_scalar else col[idx])
+
+            # Prevents columns like Column(data=[[(1,)],[(2,)]], name='a')
+            # with shape (n,1,...,1) from being printed as if there was
+            # more than one element in a row
+            if multidims_all_ones:
+                return format_func(col_format, col[(idx,) + multidim0])
+
+            if multidims_has_zero:
+                # Any zero dimension means there is no data to print
+                return ""
+
+            size = np.prod(multidims)
+            # Uses astropy.table.conf.format_size_threshold for multidimensional column formatting
+            threshold = table.conf.format_size_threshold
+
+            # If size > threshold, revert to legacy "first .. last" format
+            if size > threshold:
+                left = format_func(col_format, col[(idx,) + multidim0])
+                right = format_func(col_format, col[(idx,) + multidim1])
+                result = f"{left} .. {right}"
             else:
-                return format_func(col_format, col[idx])
+
+                def format_multidim(arr):
+                    """Recursively format multidimensional arrays."""
+                    if arr.ndim == 0:
+                        return format_func(col_format, arr)
+                    else:
+                        return "[" + " ".join(format_multidim(val) for val in arr) + "]"
+
+                result = format_multidim(col[idx])
+
+            return result
 
         # Add formatted values if within bounds allowed by max_lines
         for idx in indices:
@@ -537,7 +563,10 @@ class TableFormatter:
                 except ValueError:
                     raise ValueError(
                         f'Unable to parse format string "{col_format}" for '
-                        f'entry "{col[idx]}" in column "{col.info.name}"'
+                        f'entry "{col[idx]}" in column "{col.info.name}" '
+                        f'with datatype "{col.info.dtype}".\n'
+                        "See https://docs.astropy.org/en/stable/table/construct_table.html#format-specifier "
+                        "for possible format specifications."
                     )
 
         outs["show_length"] = show_length
@@ -548,8 +577,8 @@ class TableFormatter:
     def _pformat_table(
         self,
         table,
-        max_lines=None,
-        max_width=None,
+        max_lines=-1,
+        max_width=-1,
         show_name=True,
         show_unit=None,
         show_dtype=False,
@@ -565,9 +594,13 @@ class TableFormatter:
         ----------
         max_lines : int or None
             Maximum number of rows to output
+            -1 (default) implies no limit, ``None`` implies using the
+            height of the current terminal.
 
         max_width : int or None
             Maximum character width of output
+            -1 (default) implies no limit, ``None`` implies using the
+            width of the current terminal.
 
         show_name : bool
             Include a header row for column names. Default is True.

@@ -16,10 +16,11 @@
  ***************************************************************************/
 
 /*@null@*/ PyObject *
-PyUnitListProxy_New(
+UnitListProxy_New(
     PyObject* owner,
     Py_ssize_t size,
-    char (*array)[72]
+    char (*array)[72],
+    int readonly
     );
 
 int
@@ -31,9 +32,10 @@ get_unit_list(
     /*@unused@*/ const char* propname,
     char (*array)[72],
     Py_ssize_t len,
-    PyObject* owner) {
+    PyObject* owner,
+    int readonly) {
 
-  return PyUnitListProxy_New(owner, len, array);
+  return UnitListProxy_New(owner, len, array, readonly);
 }
 
 int

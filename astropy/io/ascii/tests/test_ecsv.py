@@ -6,26 +6,61 @@ reader/writer.
 """
 
 import copy
+import io
 import os
 import sys
 from contextlib import nullcontext
 from io import StringIO
+from pprint import pformat
 
 import numpy as np
 import pytest
 import yaml
+from numpy.testing import assert_array_equal
 
 from astropy import units as u
 from astropy.io import ascii
 from astropy.io.ascii.ecsv import DELIMITERS, InvalidEcsvDatatypeWarning
+from astropy.io.ascii.tests.common import TEST_DIR
+from astropy.io.misc.ecsv import ECSVEngine
 from astropy.io.tests.mixin_columns import compare_attrs, mixin_cols, serialized_names
 from astropy.table import Column, QTable, Table
 from astropy.table.column import MaskedColumn
 from astropy.table.table_helpers import simple_table
+from astropy.time import Time
 from astropy.units import QuantityInfo
 from astropy.units import allclose as quantity_allclose
+from astropy.utils.compat.optional_deps import (
+    HAS_BZ2,
+    HAS_LZMA,
+    HAS_PANDAS,
+    HAS_PYARROW,
+)
+from astropy.utils.masked import Masked
 
-from .common import TEST_DIR
+ENGINE_PARAMS = [
+    {"format": "ascii.ecsv"},
+    {"format": "ecsv", "engine": "io.ascii"},
+]
+if HAS_PANDAS:
+    ENGINE_PARAMS.append({"format": "ecsv", "engine": "pandas"})
+if HAS_PYARROW:
+    ENGINE_PARAMS.append({"format": "ecsv", "engine": "pyarrow"})
+
+
+@pytest.fixture(scope="module", params=ENGINE_PARAMS)
+def format_engine(request):
+    return request.param
+
+
+def patch_format_write(format_engine):
+    """Return a compatible format_engine dict for available writers"""
+    out = format_engine.copy()
+    if out["format"] == "ecsv":
+        # "io.ascii" is the only supported engine for writing via "ecsv" format.
+        out["engine"] = "io.ascii"
+    return out
+
 
 DTYPES = [
     "bool",
@@ -55,12 +90,15 @@ for dtype in DTYPES:
         data = np.array(["ab 0", "ab, 1", "ab2"])
     else:
         data = np.arange(3, dtype=dtype)
-    c = Column(
-        data, unit="m / s", description="descr_" + dtype, meta={"meta " + dtype: 1}
-    )
+    c = Column(data, unit="m / s", description="descr_" + dtype)
+    # Add meta in way that uses the default_factory type and not in alphabetical order
+    c.meta["meta " + dtype] = 1
+    c.meta["a"] = 2
     T_DTYPES[dtype] = c
 
+# Add meta in way that uses the default_factory type and not in alphabetical order
 T_DTYPES.meta["comments"] = ["comment1", "comment2"]
+T_DTYPES.meta["a"] = 3
 
 # Corresponds to simple_table()
 SIMPLE_LINES = [
@@ -103,24 +141,33 @@ def test_write_full():
         "#   unit: m / s",
         "#   datatype: bool",
         "#   description: descr_bool",
-        "#   meta: {meta bool: 1}",
+        "#   meta: !!omap",
+        "#   - {meta bool: 1}",
+        "#   - {a: 2}",
         "# - name: int64",
         "#   unit: m / s",
         "#   datatype: int64",
         "#   description: descr_int64",
-        "#   meta: {meta int64: 1}",
+        "#   meta: !!omap",
+        "#   - {meta int64: 1}",
+        "#   - {a: 2}",
         "# - name: float64",
         "#   unit: m / s",
         "#   datatype: float64",
         "#   description: descr_float64",
-        "#   meta: {meta float64: 1}",
+        "#   meta: !!omap",
+        "#   - {meta float64: 1}",
+        "#   - {a: 2}",
         "# - name: str",
         "#   unit: m / s",
         "#   datatype: string",
         "#   description: descr_str",
-        "#   meta: {meta str: 1}",
+        "#   meta: !!omap",
+        "#   - {meta str: 1}",
+        "#   - {a: 2}",
         "# meta: !!omap",
         "# - comments: [comment1, comment2]",
+        "# - {a: 3}",
         "# schema: astropy-2.0",
         "bool int64 float64 str",
         'False 0 0.0 "ab 0"',
@@ -133,23 +180,50 @@ def test_write_full():
     assert out.getvalue().splitlines() == lines
 
 
-def test_write_read_roundtrip():
+def test_read_float128_pyarrow_fail():
+    text = """
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: col0, datatype: float128}
+# schema: astropy-2.0
+col0
+1.5
+"""
+    with pytest.raises(
+        TypeError,
+        match="pyarrow engine does not support float128, choose a different engine",
+    ):
+        Table.read(text, format="ecsv", engine="pyarrow")
+
+
+def test_write_read_roundtrip(format_engine):
     """
     Write a full-featured table with all types and see that it round-trips on
     readback.  Use both space and comma delimiters.
     """
-    t = T_DTYPES
+    t = T_DTYPES.copy()
+
+    # pyarrow does not support float128 and there is no workaround
+    if format_engine.get("engine") == "pyarrow" and "float128" in t.colnames:
+        del t["float128"]
+
     for delimiter in DELIMITERS:
         out = StringIO()
-        t.write(out, format="ascii.ecsv", delimiter=delimiter)
+        t.write(out, delimiter=delimiter, **patch_format_write(format_engine))
 
         t2s = [
-            Table.read(out.getvalue(), format="ascii.ecsv"),
-            Table.read(out.getvalue(), format="ascii"),
-            ascii.read(out.getvalue()),
-            ascii.read(out.getvalue(), format="ecsv", guess=False),
-            ascii.read(out.getvalue(), format="ecsv"),
+            Table.read(out.getvalue(), **format_engine),
         ]
+        if format_engine["format"] == "ascii.ecsv":
+            t2s.extend(
+                [
+                    Table.read(out.getvalue(), format="ascii"),
+                    ascii.read(out.getvalue()),
+                    ascii.read(out.getvalue(), format="ecsv", guess=False),
+                    ascii.read(out.getvalue(), format="ecsv"),
+                ]
+            )
         for t2 in t2s:
             assert t.meta == t2.meta
             for name in t.colnames:
@@ -176,28 +250,77 @@ def test_bad_delimiter():
     assert "only space and comma are allowed" in str(err.value)
 
 
-def test_bad_header_start():
+@pytest.mark.parametrize("name", ["# name", ' #name " '])
+@pytest.mark.parametrize("delimiter", [" ", ","])
+def test_stressing_colname_starts_with_hash_etc(format_engine, name, delimiter):
+    """Column name starting with # that looks like a comment, see #18710.
+
+    Also names that contain leading/trailing whitespace and a quote character.
+    """
+    out = io.StringIO()
+    t = Table()
+    t[name] = [1, 2]
+    t["a"] = [3, 4]
+    t.write(out, delimiter=delimiter, **patch_format_write(format_engine))
+    out.seek(0)
+    t2 = Table.read(out.getvalue(), **format_engine)
+    assert t2.colnames == [name, "a"]
+
+
+def test_unavailable_ecsv_engine_for_writing():
+    out = io.StringIO()
+    t = Table()
+    with pytest.raises(
+        ValueError,
+        match=r"^engine='pyarrow' is not a supported engine for writing, use 'io.ascii'$",
+    ):
+        t.write(out, format="ecsv", engine="pyarrow")
+
+
+def test_bad_header_start(format_engine):
     """
     Bad header without initial # %ECSV x.x
     """
     lines = copy.copy(SIMPLE_LINES)
     lines[0] = "# %ECV 0.9"
+    kwargs = {"guess": False} if format_engine["format"] == "ascii.ecsv" else {}
     with pytest.raises(ascii.InconsistentTableError):
-        Table.read("\n".join(lines), format="ascii.ecsv", guess=False)
+        Table.read("\n".join(lines), **format_engine, **kwargs)
 
 
-def test_bad_delimiter_input():
+def test_bad_delimiter_input(format_engine):
     """
     Illegal delimiter in input
     """
     lines = copy.copy(SIMPLE_LINES)
     lines.insert(2, "# delimiter: |")
+    kwargs = {"guess": False} if format_engine["format"] == "ascii.ecsv" else {}
     with pytest.raises(ValueError) as err:
-        Table.read("\n".join(lines), format="ascii.ecsv", guess=False)
+        Table.read("\n".join(lines), **format_engine, **kwargs)
     assert "only space and comma are allowed" in str(err.value)
 
 
-def test_multidim_input():
+def test_multidim_only_masked(format_engine):
+    """Multi-dimensional column with one masked entry
+
+    This hits code in ``get_str_vals`` that requires a pure Python representation of
+    data instead of a numpy string array, because later on there can be substitution
+    of a longer value into the array element.
+    """
+    txt = """
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: array3x2, datatype: string, subtype: 'float64[3,2]'}
+array3x2
+""
+"""
+    t = Table.read(txt, **format_engine)
+    assert len(t) == 1
+    assert np.all(t["array3x2"].mask == [[[True, True], [True, True], [True, True]]])
+
+
+def test_multidim_input(format_engine):
     """
     Multi-dimensional column in input
     """
@@ -209,7 +332,7 @@ def test_multidim_input():
 
     out = StringIO()
     t.write(out, format="ascii.ecsv")
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
 
     assert np.all(t2["a"] == t["a"])
     assert t2["a"].shape == t["a"].shape
@@ -220,7 +343,7 @@ def test_multidim_input():
     assert np.all(t2["b"] == t["b"])
 
 
-def test_structured_input():
+def test_structured_input(format_engine):
     """
     Structured column in input.
     """
@@ -242,7 +365,7 @@ def test_structured_input():
 
     out = StringIO()
     t.write(out, format="ascii.ecsv")
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
 
     for col in t.colnames:
         assert np.all(t2[col] == t[col])
@@ -254,17 +377,17 @@ def test_structured_input():
         assert t2[col].info.meta == t[col].info.meta
 
 
-def test_round_trip_empty_table():
+def test_round_trip_empty_table(format_engine):
     """Test fix in #5010 for issue #5009 (ECSV fails for empty type with bool type)"""
     t = Table(dtype=[bool, "i", "f"], names=["a", "b", "c"])
     out = StringIO()
     t.write(out, format="ascii.ecsv")
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
     assert t.dtype == t2.dtype
     assert len(t2) == 0
 
 
-def test_csv_ecsv_colnames_mismatch():
+def test_csv_ecsv_colnames_mismatch(format_engine):
     """
     Test that mismatch in column names from normal CSV header vs.
     ECSV YAML header raises the expected exception.
@@ -273,7 +396,7 @@ def test_csv_ecsv_colnames_mismatch():
     header_index = lines.index("a b c")
     lines[header_index] = "a b d"
     with pytest.raises(ValueError) as err:
-        ascii.read(lines, format="ecsv")
+        Table.read(lines, **format_engine)
     assert "column names from ECSV header ['a', 'b', 'c']" in str(err.value)
 
 
@@ -321,6 +444,12 @@ def assert_objects_equal(obj1, obj2, attrs, compare_class=True):
         else:
             assert np.all(a1 == a2)
 
+    # Check meta values and key order but allow None to be equivalent to {}
+    meta1 = obj1.info.meta or {}
+    meta2 = obj2.info.meta or {}
+    assert meta1 == meta2
+    assert meta1.keys() == meta2.keys()
+
     # For no attrs that means we just compare directly.
     if not attrs:
         if isinstance(obj1, np.ndarray) and obj1.dtype.kind == "f":
@@ -355,7 +484,7 @@ def test_ecsv_mixins_ascii_read_class():
     assert type(t2) is QTable
 
 
-def test_ecsv_mixins_qtable_to_table():
+def test_ecsv_mixins_qtable_to_table(format_engine):
     """Test writing as QTable and reading as Table.  Ensure correct classes
     come out.
     """
@@ -364,7 +493,7 @@ def test_ecsv_mixins_qtable_to_table():
     t = QTable([mixin_cols[name] for name in names], names=names)
     out = StringIO()
     t.write(out, format="ascii.ecsv")
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
 
     assert t.colnames == t2.colnames
 
@@ -386,7 +515,7 @@ def test_ecsv_mixins_qtable_to_table():
 
 
 @pytest.mark.parametrize("table_cls", (Table, QTable))
-def test_ecsv_mixins_as_one(table_cls):
+def test_ecsv_mixins_as_one(table_cls, format_engine):
     """Test write/read all cols at once and validate intermediate column names"""
     names = sorted(mixin_cols)
     all_serialized_names = []
@@ -406,7 +535,7 @@ def test_ecsv_mixins_as_one(table_cls):
 
     out = StringIO()
     t.write(out, format="ascii.ecsv")
-    t2 = table_cls.read(out.getvalue(), format="ascii.ecsv")
+    t2 = table_cls.read(out.getvalue(), **format_engine)
 
     assert t.colnames == t2.colnames
 
@@ -425,9 +554,7 @@ def make_multidim(col, ndim):
     the multidim tests.
     """
     if ndim > 1:
-        import itertools
-
-        idxs = [idx for idx, _ in zip(itertools.cycle([0, 1]), range(3**ndim))]
+        idxs = [i % 2 for i in range(3**ndim)]
         col = col[idxs].reshape([3] * ndim)
     return col
 
@@ -435,7 +562,7 @@ def make_multidim(col, ndim):
 @pytest.mark.parametrize("name_col", list(mixin_cols.items()))
 @pytest.mark.parametrize("table_cls", (Table, QTable))
 @pytest.mark.parametrize("ndim", (1, 2, 3))
-def test_ecsv_mixins_per_column(table_cls, name_col, ndim):
+def test_ecsv_mixins_per_column(table_cls, name_col, ndim, format_engine):
     """Test write/read one col at a time and do detailed validation.
     This tests every input column type as 1-d, 2-d and 3-d.
     """
@@ -445,10 +572,11 @@ def test_ecsv_mixins_per_column(table_cls, name_col, ndim):
     col = make_multidim(col, ndim)
     t = table_cls([c, col, c], names=["c1", name, "c2"])
     t[name].info.description = "description"
+    t[name].info.meta = {"b": 2, "a": 1}
 
     out = StringIO()
     t.write(out, format="ascii.ecsv")
-    t2 = table_cls.read(out.getvalue(), format="ascii.ecsv")
+    t2 = table_cls.read(out.getvalue(), **format_engine)
 
     assert t.colnames == t2.colnames
 
@@ -504,7 +632,7 @@ def test_round_trip_masked_table_default(tmp_path):
         assert not np.all(t2[name] == t[name])  # Expected diff
 
 
-def test_round_trip_masked_table_serialize_mask(tmp_path):
+def test_round_trip_masked_table_serialize_mask(tmp_path, format_engine):
     """
     Same as prev but set the serialize_method to 'data_mask' so mask is written out
     """
@@ -519,7 +647,7 @@ def test_round_trip_masked_table_serialize_mask(tmp_path):
 
     t.write(filename, serialize_method="data_mask")
 
-    t2 = Table.read(filename)
+    t2 = Table.read(filename, **format_engine)
     assert t2.masked is False
     assert t2.colnames == t.colnames
     for name in t2.colnames:
@@ -533,7 +661,7 @@ def test_round_trip_masked_table_serialize_mask(tmp_path):
 
 
 @pytest.mark.parametrize("table_cls", (Table, QTable))
-def test_ecsv_round_trip_user_defined_unit(table_cls, tmp_path):
+def test_ecsv_round_trip_user_defined_unit(table_cls, tmp_path, format_engine):
     """Ensure that we can read-back enabled user-defined units."""
 
     # Test adapted from #8897, where it was noted that this works
@@ -550,7 +678,7 @@ def test_ecsv_round_trip_user_defined_unit(table_cls, tmp_path):
         ctx = nullcontext()
     # Note: The read might also generate ResourceWarning, in addition to UnitsWarning
     with ctx:
-        t2 = table_cls.read(filename)
+        t2 = table_cls.read(filename, **format_engine)
     assert isinstance(t2["l"].unit, u.UnrecognizedUnit)
     assert str(t2["l"].unit) == "bandpass_sol_lum"
     if table_cls is QTable:
@@ -567,12 +695,12 @@ def test_ecsv_round_trip_user_defined_unit(table_cls, tmp_path):
         # Just to be sure, also try writing with unit enabled.
         filename2 = tmp_path / "test2.ecsv"
         t3.write(filename2)
-        t4 = table_cls.read(filename)
+        t4 = table_cls.read(filename, **format_engine)
         assert t4["l"].unit is unit
         assert np.all(t4["l"] == t["l"])
 
 
-def test_read_masked_bool():
+def test_read_masked_bool(format_engine):
     txt = """\
 # %ECSV 1.0
 # ---
@@ -586,7 +714,7 @@ True
 ""
 False
 """
-    dat = ascii.read(txt, format="ecsv")
+    dat = Table.read(txt, **format_engine)
     col = dat["col0"]
     assert isinstance(col, MaskedColumn)
     assert np.all(col.mask == [False, False, False, True, False])
@@ -596,7 +724,9 @@ False
 @pytest.mark.parametrize("serialize_method", ["null_value", "data_mask"])
 @pytest.mark.parametrize("dtype", [np.int64, np.float64, bool, str])
 @pytest.mark.parametrize("delimiter", [",", " "])
-def test_roundtrip_multidim_masked_array(serialize_method, dtype, delimiter):
+def test_roundtrip_multidim_masked_array(
+    serialize_method, dtype, delimiter, format_engine
+):
     # TODO also test empty string with null value
     t = Table()
     col = MaskedColumn(np.arange(12).reshape(2, 3, 2), dtype=dtype)
@@ -608,8 +738,10 @@ def test_roundtrip_multidim_masked_array(serialize_method, dtype, delimiter):
     t["a"] = col
     t["b"] = ["x", "y"]  # Add another column for kicks
     out = StringIO()
-    t.write(out, format="ascii.ecsv", serialize_method=serialize_method)
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
+    t.write(
+        out, format="ascii.ecsv", serialize_method=serialize_method, delimiter=delimiter
+    )
+    t2 = Table.read(out.getvalue(), **format_engine)
 
     assert t2.masked is False
     assert t2.colnames == t.colnames
@@ -638,13 +770,13 @@ a
         InvalidEcsvDatatypeWarning,
         match=rf"unexpected subtype '{subtype}' set for column 'a'",
     ):
-        t = ascii.read(txt, format="ecsv")
+        t = Table.read(txt, format="ascii.ecsv")
 
     assert t["a"].dtype.kind == "U"
     assert t["a"][0] == "[1,2]"
 
 
-def test_multidim_bad_shape():
+def test_multidim_bad_shape(format_engine):
     """Test a malformed ECSV file"""
     txt = """\
 # %ECSV 1.0
@@ -660,7 +792,7 @@ a
     with pytest.raises(
         ValueError, match="column 'a' failed to convert: shape mismatch"
     ):
-        Table.read(txt, format="ascii.ecsv")
+        Table.read(txt, **format_engine)
 
 
 def test_write_not_json_serializable():
@@ -675,7 +807,7 @@ def test_write_not_json_serializable():
         t.write(out, format="ascii.ecsv")
 
 
-def test_read_not_json_serializable():
+def test_read_not_json_serializable(format_engine):
     """Test a malformed ECSV file"""
     txt = """\
 # %ECSV 1.0
@@ -688,10 +820,10 @@ fail
 [3,4]"""
     match = "column 'a' failed to convert: column value is not valid JSON"
     with pytest.raises(ValueError, match=match):
-        Table.read(txt, format="ascii.ecsv")
+        Table.read(txt, **format_engine)
 
 
-def test_read_bad_datatype():
+def test_read_bad_datatype(format_engine):
     """Test a malformed ECSV file"""
     txt = """\
 # %ECSV 1.0
@@ -700,19 +832,30 @@ def test_read_bad_datatype():
 # - {name: a, datatype: object}
 # schema: astropy-2.0
 a
-fail
+{"x":1}
 [3,4]"""
     with pytest.warns(
         InvalidEcsvDatatypeWarning,
         match="unexpected datatype 'object' of column 'a' is not in allowed",
     ):
-        t = Table.read(txt, format="ascii.ecsv")
-    assert t["a"][0] == "fail"
-    assert type(t["a"][1]) is str
-    assert type(t["a"].dtype) == np.dtype("O")
+        t = Table.read(txt, **format_engine)
+    col = t["a"]
+    if format_engine["format"] == "ascii.ecsv":
+        # This is the legacy "passing" behavior for io.ascii.ecsv, but it is just wrong.
+        # Not clear why this was included as expected behavior.
+        assert col[0] == '{"x":1}'
+        assert col[1] == "[3,4]"
+        assert all(type(col[ii]) is str for ii in range(len(col)))
+        assert col.dtype.kind == "O"
+    else:
+        assert col[0] == {"x": 1}
+        assert type(col[0]) is dict
+        assert col[1] == [3, 4]
+        assert type(col[1]) is list
+        assert col.dtype.kind == "O"
 
 
-def test_read_complex():
+def test_read_complex(format_engine):
     """Test an ECSV v1.0 file with a complex column"""
     txt = """\
 # %ECSV 1.0
@@ -728,11 +871,11 @@ a
         InvalidEcsvDatatypeWarning,
         match="unexpected datatype 'complex' of column 'a' is not in allowed",
     ):
-        t = Table.read(txt, format="ascii.ecsv")
+        t = Table.read(txt, **format_engine)
     assert t["a"].dtype.type is np.complex128
 
 
-def test_read_str():
+def test_read_str(format_engine):
     """Test an ECSV file with a 'str' instead of 'string' datatype"""
     txt = """\
 # %ECSV 1.0
@@ -748,12 +891,12 @@ S"""  # also testing single character text
         InvalidEcsvDatatypeWarning,
         match="unexpected datatype 'str' of column 'a' is not in allowed",
     ):
-        t = Table.read(txt, format="ascii.ecsv")
+        t = Table.read(txt, **format_engine)
     assert isinstance(t["a"][1], str)
     assert isinstance(t["a"][0], np.str_)
 
 
-def test_read_bad_datatype_for_object_subtype():
+def test_read_bad_datatype_for_object_subtype(format_engine):
     """Test a malformed ECSV file"""
     txt = """\
 # %ECSV 1.0
@@ -766,10 +909,10 @@ fail
 [3,4]"""
     match = "column 'a' failed to convert: datatype of column 'a' must be \"string\""
     with pytest.raises(ValueError, match=match):
-        Table.read(txt, format="ascii.ecsv")
+        Table.read(txt, **format_engine)
 
 
-def test_full_repr_roundtrip():
+def test_full_repr_roundtrip(format_engine):
     """Test round-trip of float values to full precision even with format
     specified"""
     t = Table()
@@ -777,8 +920,10 @@ def test_full_repr_roundtrip():
     t["a"].info.format = ".2f"
     out = StringIO()
     t.write(out, format="ascii.ecsv")
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
-    assert np.all(t["a"] == t2["a"])
+    t2 = Table.read(out.getvalue(), **format_engine)
+    # Very small differences in float64 values with pandas. TODO: check why.
+    atol = 1e-16 if format_engine.get("engine") == "pandas" else 0.0
+    np.testing.assert_allclose(t["a"], t2["a"], atol=atol, rtol=0)
     assert t2["a"].info.format == ".2f"
 
 
@@ -793,13 +938,10 @@ def _get_ecsv_header_dict(text):
     lines = [line.strip() for line in text.splitlines()]
     lines = [line[2:] for line in lines if line.startswith("#")]
     lines = lines[2:]  # Get rid of the header
-    out = yaml.safe_load("\n".join(lines))
-    return out
+    return yaml.safe_load("\n".join(lines))
 
 
 def _make_expected_values(cols):
-    from pprint import pformat
-
     for name, col in cols.items():
         t = Table()
         t[name] = col
@@ -901,7 +1043,7 @@ exps["1-d object"] = [
 
 
 @pytest.mark.parametrize("name,col,exp", list(zip(cols, cols.values(), exps.values())))
-def test_specialized_columns(name, col, exp):
+def test_specialized_columns(name, col, exp, format_engine):
     """Test variable length lists, multidim columns, object columns."""
     t = Table()
     t[name] = col
@@ -909,17 +1051,17 @@ def test_specialized_columns(name, col, exp):
     t.write(out, format="ascii.ecsv")
     hdr = _get_ecsv_header_dict(out.getvalue())
     assert hdr["datatype"] == exp
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
     assert t2.colnames == t.colnames
-    for name in t2.colnames:
-        assert t2[name].dtype == t[name].dtype
-        for val1, val2 in zip(t2[name], t[name]):
+    for colname in t2.colnames:
+        assert t2[colname].dtype == t[colname].dtype
+        for val1, val2 in zip(t2[colname], t[colname]):
             if isinstance(val1, np.ndarray):
                 assert val1.dtype == val2.dtype
             assert np.all(val1 == val2)
 
 
-def test_full_subtypes():
+def test_full_subtypes(format_engine):
     """Read ECSV file created by M. Taylor that includes scalar, fixed array,
     variable array for all datatypes. This file has missing values for all
     columns as both per-value null and blank entries for the entire column
@@ -928,14 +1070,36 @@ def test_full_subtypes():
     Note: original file was modified to include blank values in f_float and
     f_double columns.
     """
-    t = Table.read(os.path.join(TEST_DIR, "data", "subtypes.ecsv"))
-    colnames = (
-        "i_index,"
-        "s_byte,s_short,s_int,s_long,s_float,s_double,s_string,s_boolean,"
-        "f_byte,f_short,f_int,f_long,f_float,f_double,f_string,f_boolean,"
-        "v_byte,v_short,v_int,v_long,v_float,v_double,v_string,v_boolean,"
-        "m_int,m_double"
-    ).split(",")
+    t = Table.read(os.path.join(TEST_DIR, "data", "subtypes.ecsv"), **format_engine)
+    colnames = [
+        "i_index",
+        "s_byte",
+        "s_short",
+        "s_int",
+        "s_long",
+        "s_float",
+        "s_double",
+        "s_string",
+        "s_boolean",
+        "f_byte",
+        "f_short",
+        "f_int",
+        "f_long",
+        "f_float",
+        "f_double",
+        "f_string",
+        "f_boolean",
+        "v_byte",
+        "v_short",
+        "v_int",
+        "v_long",
+        "v_float",
+        "v_double",
+        "v_string",
+        "v_boolean",
+        "m_int",
+        "m_double",
+    ]
     assert t.colnames == colnames
 
     type_map = {
@@ -976,23 +1140,23 @@ def test_full_subtypes():
             assert info.dtype.name.startswith(type_map[type_name])
 
 
-def test_masked_empty_subtypes():
+def test_masked_empty_subtypes(format_engine):
     """Test blank field in subtypes. Similar to previous test but with explicit
     checks of values"""
     txt = """
-    # %ECSV 1.0
-    # ---
-    # datatype:
-    # - {name: o, datatype: string, subtype: json}
-    # - {name: f, datatype: string, subtype: 'int64[2]'}
-    # - {name: v, datatype: string, subtype: 'int64[null]'}
-    # schema: astropy-2.0
-    o f v
-    null [0,1] [1]
-    "" "" ""
-    [1,2] [2,3] [2,3]
-    """
-    t = Table.read(txt, format="ascii.ecsv")
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: o, datatype: string, subtype: json}
+# - {name: f, datatype: string, subtype: 'int64[2]'}
+# - {name: v, datatype: string, subtype: 'int64[null]'}
+# schema: astropy-2.0
+o f v
+null [0,1] [1]
+"" "" ""
+[1,2] [2,3] [2,3]
+"""
+    t = Table.read(txt, **format_engine)
     assert np.all(t["o"] == np.array([None, -1, [1, 2]], dtype=object))
     assert np.all(t["o"].mask == [False, True, False])
 
@@ -1005,7 +1169,7 @@ def test_masked_empty_subtypes():
     assert np.all(t["v"].mask == [False, True, False])
 
 
-def test_masked_vals_in_array_subtypes():
+def test_masked_vals_in_array_subtypes(format_engine):
     """Test null values in fixed and variable array subtypes."""
     t = Table()
     t["f"] = np.ma.array([[1, 2], [3, 4]], mask=[[0, 1], [1, 0]], dtype=np.int64)
@@ -1029,7 +1193,7 @@ def test_masked_vals_in_array_subtypes():
     hdr = _get_ecsv_header_dict(out.getvalue())
     hdr_exp = _get_ecsv_header_dict(txt)
     assert hdr == hdr_exp
-    t2 = Table.read(out.getvalue(), format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
     assert t2.colnames == t.colnames
     for name in t2.colnames:
         assert t2[name].dtype == t[name].dtype
@@ -1057,3 +1221,176 @@ def test_guess_ecsv_with_one_column():
     t = ascii.read(txt)
     assert t["col"].dtype.kind == "U"  # would be int with basic format
     assert t["col"].description == "hello"
+
+
+@pytest.mark.parametrize("masked", [MaskedColumn, Masked, np.ma.MaskedArray])
+def test_write_structured_masked_column(masked, format_engine):
+    a = np.array([(1, 2), (3, 4)], dtype="i,i")
+    mc = masked(a, mask=[(True, False), (False, False)])
+    t = Table([mc], names=["mc"])
+    out = StringIO()
+    t.write(out, format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
+    assert type(t2["mc"]) is type(t["mc"])
+    assert (t2["mc"] == mc).all()
+    assert (t2["mc"].mask == mc.mask).all()
+
+
+@pytest.mark.parametrize("masked", [Column, MaskedColumn])
+def test_write_read_bytes_string_column(masked, format_engine):
+    # Special case bytes roundtrip test. Make sure b'abc' is encoded
+    # as 'abc' and not "b'abc'"
+    kwargs = {"mask": [False, True, False]} if masked is MaskedColumn else {}
+    col = masked(np.array([b"abc", b"de", b"f"], dtype="S3"), **kwargs)
+    t = Table([col], names=["s"])
+    out = StringIO()
+    t.write(out, format="ascii.ecsv")
+    t2 = Table.read(out.getvalue(), **format_engine)
+    assert np.all(t2["s"] == col.astype("U"))
+    if masked is MaskedColumn:
+        assert np.all(t2["s"].mask == col.mask)
+
+
+def test_write_masked_time_ymdhms_mixin(format_engine):
+    # Regression test for gh-16370
+    # Make a masked time,
+    t = Time({"year": 2000, "month": 1, "day": [1, 2]})
+    t[0] = np.ma.masked
+    # Create a table and write to a file
+    qt = QTable([t], names=["t"])
+    out = StringIO()
+    qt.write(out, format="ascii.ecsv")
+    # Read back and compare.
+    qt2 = QTable.read(out.getvalue(), **format_engine)
+    # Note that value under time does not roundtrip
+    assert (qt2["t"] == t).all()
+    assert (qt2["t"].mask == t.mask).all()
+
+
+def test_register_bad_engine():
+    msg = "Subclasses of ECSVEngine must define a class attribute 'name' as a string, got <class 'int'>."
+    with pytest.raises(TypeError, match=msg):
+
+        class BadEngine(ECSVEngine):
+            name = 1
+            format = "ascii.ecsv"
+
+
+@pytest.mark.parametrize(
+    "compressed_filename",
+    [
+        "test.ecsv.gz",
+        pytest.param(
+            "test.ecsv.bz2",
+            marks=pytest.mark.xfail(not HAS_BZ2, reason="no bz2 support"),
+        ),
+        pytest.param(
+            "test.ecsv.xz",
+            marks=pytest.mark.xfail(not HAS_LZMA, reason="no lzma support"),
+        ),
+    ],
+)
+def test_compressed_files(tmp_path, format_engine, compressed_filename):
+    filename = tmp_path / "test.ecsv"
+    t = simple_table()
+    t.write(filename, format="ascii.ecsv")
+
+    compressed_filename = tmp_path / compressed_filename
+    if compressed_filename.suffix == ".gz":
+        import gzip
+
+        opener = gzip.open
+    elif compressed_filename.suffix == ".bz2":
+        import bz2
+
+        opener = bz2.open
+    elif compressed_filename.suffix == ".xz":
+        import lzma
+
+        opener = lzma.open
+    else:
+        # Shouldn't really happen
+        opener = open
+
+    # Compress ecsv file
+    with open(filename, "rb") as f_in:
+        with opener(compressed_filename, "wb") as f_out:
+            f_out.writelines(f_in)
+
+    # Open compressed file and compare to ensure it's read correctly
+    t_comp = Table.read(compressed_filename, **format_engine)
+    assert_array_equal(t, t_comp)
+
+
+def test_meta_not_omap_but_list(format_engine):
+    """The ecsv spec allows that header meta to be any valid safe YAML.
+
+    Though astropy's writer writes with an !!omap tag, and all examples
+    in the ecsv spec (https://github.com/astropy/astropy-APEs/blob/main/APE6.rst)
+    use that extra (non standard) tag, the spec specifically says
+    that the header meta
+    'an arbitrary data structure consisting purely of data types that can be encoded
+    and decoded with the YAML "safe" dumper and loader'.
+
+    See one example in https://github.com/astropy/astropy/issues/5990
+    """
+    txt = """
+# %ECSV 1.0
+# ---
+# meta:
+# - keywords:
+#   - {z_key1: val1}
+#   - {a_key2: val2}
+# - comments: [Comment 1, Comment 2, Comment 3]
+# datatype:
+# - name: fake
+#   datatype: string
+fake
+0"""
+    with pytest.warns(
+        UserWarning,
+        match="Found ECSV table meta of type list instead of",
+    ):
+        t = Table.read(txt, **format_engine)
+    assert len(t.meta) == 1
+    assert len(t.meta["meta"]) == 2
+    assert t.meta["meta"][0] == {"keywords": [{"z_key1": "val1"}, {"a_key2": "val2"}]}
+    assert t.meta["meta"][1] == {"comments": ["Comment 1", "Comment 2", "Comment 3"]}
+
+
+MAP_BUT_NOT_OMAP_LINES = [
+    "# %ECSV 1.0",
+    "# ---",
+    "# datatype:",
+    "# - {name: fake, datatype: string}",
+    "# meta: !!omap",
+    "# - {hr: 65}",
+    "# - {avg: 0.278}",
+    "# - {rbi: 147}",
+    "# schema: astropy-2.0",
+    "fake",
+    "0",
+]
+
+
+def test_meta_not_omap_but_map(format_engine):
+    """Like test_meta_not_omap_but_list but for a mapping"""
+    txt = """
+# %ECSV 1.0
+# ---
+# datatype:
+# - {name: fake, datatype: string}
+# meta:
+#   hr:  65    # Home runs
+#   avg: 0.278 # Batting average
+#   rbi: 147   # Runs Batted In
+# schema: astropy-2.0
+fake
+0"""
+    t = Table.read(txt, **format_engine)
+    assert t.meta["hr"] == 65
+    assert t.meta["avg"] == 0.278
+    assert t.meta["rbi"] == 147
+    out = StringIO()
+    t.write(out, format="ascii.ecsv")
+    assert out.getvalue().splitlines() == MAP_BUT_NOT_OMAP_LINES

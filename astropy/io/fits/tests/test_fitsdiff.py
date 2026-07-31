@@ -11,6 +11,7 @@ from astropy.io.fits import FITSDiff, HDUList, Header, ImageHDU
 from astropy.io.fits.convenience import writeto
 from astropy.io.fits.hdu import PrimaryHDU, hdulist
 from astropy.io.fits.scripts import fitsdiff
+from astropy.utils.compat.optional_deps import HAS_UNCOMPRESSPY
 from astropy.utils.misc import _NOT_OVERWRITING_MSG_MATCH
 
 from .conftest import FitsTestCase
@@ -77,28 +78,32 @@ class TestFITSDiff_script(FitsTestCase):
         numdiff = fitsdiff.main([tmp_a, tmp_b])
         out, err = capsys.readouterr()
         assert numdiff == 1
-        assert out.splitlines()[-4:] == [
+        assert out.splitlines()[-6:] == [
             "        a> 9",
             "        b> 10",
             "     ...",
             "     100 different pixels found (100.00% different).",
+            "     Maximum relative difference: 1.0",
+            "     Maximum absolute difference: 1.0",
         ]
 
         numdiff = fitsdiff.main(["-n", "1", tmp_a, tmp_b])
         out, err = capsys.readouterr()
         assert numdiff == 1
-        assert out.splitlines()[-4:] == [
+        assert out.splitlines()[-6:] == [
             "        a> 0",
             "        b> 1",
             "     ...",
             "     100 different pixels found (100.00% different).",
+            "     Maximum relative difference: 1.0",
+            "     Maximum absolute difference: 1.0",
         ]
 
     def test_outputfile(self):
         a = np.arange(100).reshape(10, 10)
         hdu_a = PrimaryHDU(data=a)
         b = a.copy()
-        b[1, 0] = 12
+        b[1, 0] = 20
         hdu_b = PrimaryHDU(data=b)
         tmp_a = self.temp("testa.fits")
         tmp_b = self.temp("testb.fits")
@@ -109,11 +114,13 @@ class TestFITSDiff_script(FitsTestCase):
         assert numdiff == 1
         with open(self.temp("diff.txt")) as f:
             out = f.read()
-        assert out.splitlines()[-4:] == [
+        assert out.splitlines()[-6:] == [
             "     Data differs at [1, 2]:",
             "        a> 10",
-            "        b> 12",
+            "        b> 20",
             "     1 different pixels found (1.00% different).",
+            "     Maximum relative difference: 0.5",
+            "     Maximum absolute difference: 10.0",
         ]
 
     def test_atol(self):
@@ -150,7 +157,7 @@ class TestFITSDiff_script(FitsTestCase):
         a = np.arange(100, dtype=float).reshape(10, 10)
         hdu_a = PrimaryHDU(data=a)
         b = a.copy()
-        b[1, 0] = 11
+        b[1, 0] = 20
         hdu_b = PrimaryHDU(data=b)
         tmp_a = self.temp("testa.fits")
         tmp_b = self.temp("testb.fits")
@@ -173,10 +180,12 @@ Primary HDU:
    Data contains differences:
      Data differs at [1, 2]:
         a> 10.0
-         ?  ^
-        b> 11.0
-         ?  ^
+         ? ^
+        b> 20.0
+         ? ^
      1 different pixels found (1.00% different).
+     Maximum relative difference: 0.5
+     Maximum absolute difference: 10.0
 """
         )
         assert err == ""
@@ -228,7 +237,11 @@ No differences found.
         assert out == ""
         assert err == ""
 
-    @pytest.mark.slow
+    @pytest.mark.filterwarnings(
+        "ignore:Logical variable-length array column.*older astropy:"
+        "astropy.utils.exceptions.AstropyUserWarning",
+        "ignore:.*[Cc]olumn '.*' contains NULL:astropy.utils.exceptions.AstropyUserWarning",
+    )
     def test_path(self, capsys):
         os.mkdir(self.temp("sub/"))
         tmp_b = self.temp("sub/ascii.fits")
@@ -248,11 +261,9 @@ No differences found.
         tmp_d = self.temp("sub/")
         assert fitsdiff.main(["-q", self.data_dir, tmp_d]) == 1
         assert fitsdiff.main(["-q", tmp_d, self.data_dir]) == 1
-        with pytest.warns(
-            UserWarning,
-            match=r"Field 'ORBPARM' has a repeat count of 0 in its format code",
-        ):
-            assert fitsdiff.main(["-q", self.data_dir, self.data_dir]) == 0
+
+        expected_retv = int(not HAS_UNCOMPRESSPY)
+        assert fitsdiff.main(["-q", self.data_dir, self.data_dir]) == expected_retv
 
         # no match
         tmp_c = self.data("arange.fits")
@@ -261,17 +272,50 @@ No differences found.
         assert "'arange.fits' has no match in" in err
 
         # globbing
-        with pytest.warns(
-            UserWarning,
-            match=r"Field 'ORBPARM' has a repeat count of 0 in its format code",
-        ):
-            assert fitsdiff.main(["-q", self.data_dir + "/*.fits", self.data_dir]) == 0
+        assert fitsdiff.main(["-q", self.data_dir + "/*.fits", self.data_dir]) == 0
         assert fitsdiff.main(["-q", self.data_dir + "/g*.fits", tmp_d]) == 0
 
         # one file and a directory
         tmp_f = self.data("tb.fits")
         assert fitsdiff.main(["-q", tmp_f, self.data_dir]) == 0
         assert fitsdiff.main(["-q", self.data_dir, tmp_f]) == 0
+
+    @pytest.mark.filterwarnings("ignore:unclosed file:ResourceWarning")
+    def test_warning_unreadable_file(self, capsys, monkeypatch):
+        # simulate not having uncompresspy installed regardless of the actual state
+        monkeypatch.setattr(fits.file, "HAS_UNCOMPRESSPY", False)
+
+        Zfile = self.data("lzw.fits.Z")
+        assert fitsdiff.main([Zfile, Zfile]) != 0
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == f"Warning: failed to open {Zfile}. Skipping.\n"
+
+        os.mkdir(self.temp("sub/"))
+        tmp = self.temp("sub/ascii.fits")
+        tmp_h = self.data("group.fits")
+        with hdulist.fitsopen(tmp_h) as hdu:
+            hdu.writeto(tmp)
+
+        assert fitsdiff.main([Zfile, tmp]) != 0
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == f"Warning: failed to open {Zfile} (or {tmp}). Skipping.\n"
+
+        assert fitsdiff.main(["-q", Zfile, tmp]) != 0
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == ""
+
+        assert fitsdiff.main([tmp, Zfile]) != 0
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == f"Warning: failed to open {tmp} (or {Zfile}). Skipping.\n"
+
+        assert fitsdiff.main(["-q", tmp, Zfile]) != 0
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == ""
 
     def test_ignore_hdus(self):
         a = np.arange(100).reshape(10, 10)
@@ -333,9 +377,9 @@ def test_fitsdiff_openfile(tmp_path):
 
 class Test_FITSDiff(FitsTestCase):
     def test_FITSDiff_report(self, home_is_temp):
-        self.copy_file("test0.fits")
-        fits.setval(self.temp("test0.fits"), "TESTKEY", value="testval")
-        d = FITSDiff(self.data("test0.fits"), self.temp("test0.fits"))
+        testfile = self.copy_file("test0.fits")
+        fits.setval(testfile, "TESTKEY", value="testval")
+        d = FITSDiff(self.data("test0.fits"), testfile)
         assert not d.identical
         d.report(self.temp("diff_report.txt"))
 

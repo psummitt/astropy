@@ -11,6 +11,7 @@ import pytest
 from astropy.io import fits
 from astropy.io.fits.card import _pad
 from astropy.io.fits.header import _pad_length
+from astropy.io.fits.scripts import fitsheader
 from astropy.io.fits.util import encode_ascii
 from astropy.io.fits.verify import VerifyError, VerifyWarning
 from astropy.utils.exceptions import AstropyUserWarning
@@ -50,8 +51,8 @@ def test_init_with_header():
 def test_init_with_dict():
     dict1 = {"a": 11, "b": 12, "c": 13, "d": 14, "e": 15}
     h1 = fits.Header(dict1)
-    for i in dict1:
-        assert dict1[i] == h1[i]
+    for i, expected in dict1.items():
+        assert h1[i] == expected
 
 
 def test_init_with_ordereddict():
@@ -186,13 +187,21 @@ class TestHeaderFunctions(FitsTestCase):
     def test_constructor_filter_illegal_data_structures(self):
         """Test that Card constructor raises exceptions on bad arguments"""
 
-        pytest.raises(ValueError, fits.Card, ("abc",), {"value": (2, 3)})
-        pytest.raises(ValueError, fits.Card, "key", [], "comment")
+        with pytest.raises(ValueError):
+            fits.Card(("abc",), {"value": (2, 3)})
+        with pytest.raises(ValueError):
+            fits.Card("key", [], "comment")
 
     def test_keyword_too_long(self):
         """Test that long Card keywords are allowed, but with a warning"""
-
-        pytest.warns(UserWarning, fits.Card, "abcdefghi", "long")
+        with pytest.warns(
+            UserWarning,
+            match=(
+                r"^Keyword name 'abcdefghi' is greater than 8 characters or contains "
+                r"characters not allowed by the FITS standard; a HIERARCH card will be created\.$"
+            ),
+        ):
+            fits.Card("abcdefghi", "long")
 
     def test_illegal_characters_in_key(self):
         """
@@ -530,15 +539,20 @@ class TestHeaderFunctions(FitsTestCase):
         assert header["COMMENT"] == header["HISTORY"]
         assert header["COMMENT"] == header[""]
 
+    def check_roundtrip(self, card):
+        hdu = fits.PrimaryHDU()
+        hdu.header.append(card)
+        hdu.writeto(self.temp("test_new.fits"))
+        hdul = fits.open(self.temp("test_new.fits"))
+        new_card = hdul[0].header.cards[card.keyword]
+        hdul.close()
+        assert new_card.keyword == card.keyword
+        assert new_card.value == card.value
+        assert new_card.comment == card.comment
+
     def test_long_string_from_file(self):
         c = fits.Card("abc", "long string value " * 10, "long comment " * 10)
-        hdu = fits.PrimaryHDU()
-        hdu.header.append(c)
-        hdu.writeto(self.temp("test_new.fits"))
-
-        hdul = fits.open(self.temp("test_new.fits"))
-        c = hdul[0].header.cards["abc"]
-        hdul.close()
+        c.verify()
         assert (
             str(c)
             == "ABC     = 'long string value long string value long string value long string &' "
@@ -548,6 +562,7 @@ class TestHeaderFunctions(FitsTestCase):
             "CONTINUE  '&' / comment long comment long comment long comment long comment     "
             "CONTINUE  '' / long comment                                                     "
         )
+        self.check_roundtrip(c)
 
     def test_word_in_long_string_too_long(self):
         # if a word in a long string is too long, it will be cut in the middle
@@ -719,6 +734,52 @@ class TestHeaderFunctions(FitsTestCase):
         assert c.value == "calFileVersion"
         assert c.comment == ""
 
+    def test_hierarch_key_with_long_value(self):
+        # regression test for gh-3746
+        long_key = "A VERY LONG KEY HERE"
+        long_value = (
+            "A VERY VERY VERY VERY LONG STRING THAT SOMETHING MAY BE MAD"
+            " ABOUT PERSISTING BECAUSE ASTROPY CAN'T HANDLE THE TRUTH"
+        )
+        with pytest.warns(fits.verify.VerifyWarning, match="greater than 8"):
+            card = fits.Card(long_key, long_value)
+        card.verify()
+        assert str(card) == (
+            "HIERARCH A VERY LONG KEY HERE = 'A VERY VERY VERY VERY LONG STRING THAT &'      "
+            "CONTINUE  'SOMETHING MAY BE MAD ABOUT PERSISTING BECAUSE ASTROPY CAN''T &'      "
+            "CONTINUE  'HANDLE THE TRUTH'                                                    "
+        )
+        self.check_roundtrip(card)
+
+    def test_hierarch_key_with_long_value_no_spaces(self):
+        # regression test for gh-3746
+        long_key = "A VERY LONG KEY HERE"
+        long_value = "ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ" * 3
+        with pytest.warns(fits.verify.VerifyWarning, match="greater than 8"):
+            card = fits.Card(long_key, long_value)
+        card.verify()
+        assert str(card) == (
+            "HIERARCH A VERY LONG KEY HERE = 'ABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRS&'"
+            "CONTINUE  'TUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZABCDEFGH&'"
+            "CONTINUE  'IJKLMNOPQRSTUVWXYZABCDEFGHIJKLMNOPQRSTUVWXYZ'                        "
+        )
+        self.check_roundtrip(card)
+
+    def test_hierarch_key_with_medium_value_and_comment(self):
+        long_key = "A VERY LONG KEY HERE"
+        medium_value = "ABCD EFGH IJKL MNOP QRST " * 2
+        assert len(medium_value) == 50  # Just right to trigger previous bug
+        comment = "random comment"
+        with pytest.warns(fits.verify.VerifyWarning, match="greater than 8"):
+            card = fits.Card(long_key, medium_value, comment)
+        card.verify()
+        assert str(card) == (
+            "HIERARCH A VERY LONG KEY HERE = 'ABCD EFGH IJKL MNOP QRST ABCD EFGH IJKL MNOP &'"
+            + _pad("CONTINUE  'QRST &'")
+            + _pad("CONTINUE  '' / random comment")
+        )
+        self.check_roundtrip(card)
+
     def test_verify_mixed_case_hierarch(self):
         """Regression test for
         https://github.com/spacetelescope/PyFITS/issues/7
@@ -758,8 +819,6 @@ class TestHeaderFunctions(FitsTestCase):
         header = fits.Header()
         # De-referencing header through the inline function should behave
         # identically to accessing it in the pytest.raises context below.
-        pytest.raises(KeyError, lambda k: header[k], "NAXIS")
-        # Test exception with message
         with pytest.raises(KeyError, match=r"Keyword 'NAXIS' not found."):
             header["NAXIS"]
 
@@ -932,7 +991,8 @@ class TestHeaderFunctions(FitsTestCase):
         def test():
             header["FOO"] = ("bar", "baz", "qux")
 
-        pytest.raises(ValueError, test)
+        with pytest.raises(ValueError):
+            test()
 
     def test_header_setitem_1tuple(self):
         header = fits.Header()
@@ -1067,7 +1127,9 @@ class TestHeaderFunctions(FitsTestCase):
     def test_wildcard_slice(self):
         """Test selecting a subsection of a header via wildcard matching."""
 
-        header = fits.Header([("ABC", 0), ("DEF", 1), ("ABD", 2)])
+        header = fits.Header(
+            [("ABC", 0), ("DEF", 1), ("ABD", 2)]  # codespell:ignore abd
+        )
         newheader = header["AB*"]
         assert len(newheader) == 2
         assert newheader[0] == 0
@@ -1087,7 +1149,9 @@ class TestHeaderFunctions(FitsTestCase):
     def test_wildcard_slice_assignment(self):
         """Test assigning to a header slice selected via wildcard matching."""
 
-        header = fits.Header([("ABC", 0), ("DEF", 1), ("ABD", 2)])
+        header = fits.Header(
+            [("ABC", 0), ("DEF", 1), ("ABD", 2)]  # codespell:ignore abd
+        )
 
         # Test assigning slice to the same value; this works similarly to numpy
         # arrays
@@ -1108,7 +1172,9 @@ class TestHeaderFunctions(FitsTestCase):
     def test_wildcard_slice_deletion(self):
         """Test deleting cards from a header that match a wildcard pattern."""
 
-        header = fits.Header([("ABC", 0), ("DEF", 1), ("ABD", 2)])
+        header = fits.Header(
+            [("ABC", 0), ("DEF", 1), ("ABD", 2)]  # codespell:ignore abd
+        )
         del header["AB*"]
         assert len(header) == 1
         assert header[0] == 1
@@ -1223,11 +1289,13 @@ class TestHeaderFunctions(FitsTestCase):
         assert len(header) == 1
         assert list(header) == ["E"]
 
-        pytest.raises(IndexError, header.pop, 42)
+        with pytest.raises(IndexError):
+            header.pop(42)
 
     def test_header_dict_like_pop(self):
         header = fits.Header([("A", "B"), ("C", "D"), ("E", "F"), ("G", "H")])
-        pytest.raises(TypeError, header.pop, "A", "B", "C")
+        with pytest.raises(TypeError):
+            header.pop("A", "B", "C")
 
         last = header.pop("G")
         assert last == "H"
@@ -1248,7 +1316,8 @@ class TestHeaderFunctions(FitsTestCase):
         assert default == "Y"
         assert len(header) == 1
 
-        pytest.raises(KeyError, header.pop, "X")
+        with pytest.raises(KeyError):
+            header.pop("X")
 
     def test_popitem(self):
         header = fits.Header([("A", "B"), ("C", "D"), ("E", "F")])
@@ -1261,7 +1330,8 @@ class TestHeaderFunctions(FitsTestCase):
         keyword, value = header.popitem()
         assert keyword not in header
         assert len(header) == 0
-        pytest.raises(KeyError, header.popitem)
+        with pytest.raises(KeyError):
+            header.popitem()
 
     def test_setdefault(self):
         header = fits.Header([("A", "B"), ("C", "D"), ("E", "F")])
@@ -1446,7 +1516,8 @@ class TestHeaderFunctions(FitsTestCase):
         header["HISTORY"] = "a"
         header["HISTORY"] = "b"
         assert header.count("HISTORY") == 2
-        pytest.raises(KeyError, header.count, "G")
+        with pytest.raises(KeyError):
+            header.count("G")
 
     def test_header_append_use_blanks(self):
         """
@@ -1856,11 +1927,16 @@ class TestHeaderFunctions(FitsTestCase):
         def setitem(k, v):
             header[k] = v
 
-        pytest.raises(ValueError, setitem, "END", "")
-        pytest.raises(ValueError, header.append, "END")
-        pytest.raises(ValueError, header.append, "END", end=True)
-        pytest.raises(ValueError, header.insert, len(header), "END")
-        pytest.raises(ValueError, header.set, "END")
+        with pytest.raises(ValueError):
+            setitem("END", "")
+        with pytest.raises(ValueError):
+            header.append("END")
+        with pytest.raises(ValueError):
+            header.append("END", end=True)
+        with pytest.raises(ValueError):
+            header.insert(len(header), "END")
+        with pytest.raises(ValueError):
+            header.set("END")
 
     def test_invalid_end_cards(self):
         """
@@ -2254,21 +2330,26 @@ class TestHeaderFunctions(FitsTestCase):
         assert "FOO" in h
         assert h["FOO"] == "BAR"
         assert repr(h) == _pad("FOO     = 'BAR     '")
-        pytest.raises(ValueError, assign, erikku, "BAR")
+        with pytest.raises(ValueError):
+            assign(erikku, "BAR")
 
         h["FOO"] = "BAZ"
         assert h["FOO"] == "BAZ"
         assert repr(h) == _pad("FOO     = 'BAZ     '")
-        pytest.raises(ValueError, assign, "FOO", erikku)
+        with pytest.raises(ValueError):
+            assign("FOO", erikku)
 
         h["FOO"] = ("BAR", "BAZ")
         assert h["FOO"] == "BAR"
         assert h.comments["FOO"] == "BAZ"
         assert repr(h) == _pad("FOO     = 'BAR     '           / BAZ")
 
-        pytest.raises(ValueError, assign, "FOO", ("BAR", erikku))
-        pytest.raises(ValueError, assign, "FOO", (erikku, "BAZ"))
-        pytest.raises(ValueError, assign, "FOO", (erikku, erikku))
+        with pytest.raises(ValueError):
+            assign("FOO", ("BAR", erikku))
+        with pytest.raises(ValueError):
+            assign("FOO", (erikku, "BAZ"))
+        with pytest.raises(ValueError):
+            assign("FOO", (erikku, erikku))
 
     def test_assign_non_ascii(self):
         """
@@ -2389,9 +2470,12 @@ class TestHeaderFunctions(FitsTestCase):
                 assert header["AAAAAAAA"] == "A" * 72
 
                 # It should not be possible to assign to the invalid keywords
-                pytest.raises(ValueError, header.set, "CLFIND2D", "foo")
-                pytest.raises(ValueError, header.set, "Just som", "foo")
-                pytest.raises(ValueError, header.set, "AAAAAAAA", "foo")
+                with pytest.raises(ValueError):
+                    header.set("CLFIND2D", "foo")
+                with pytest.raises(ValueError):
+                    header.set("Just som", "foo")
+                with pytest.raises(ValueError):
+                    header.set("AAAAAAAA", "foo")
 
     def test_fix_hierarch_with_invalid_value(self, capsys):
         """
@@ -2417,11 +2501,16 @@ class TestHeaderFunctions(FitsTestCase):
         """
 
         h = fits.Header()
-        pytest.raises(ValueError, h.set, "TEST", float("nan"))
-        pytest.raises(ValueError, h.set, "TEST", np.nan)
-        pytest.raises(ValueError, h.set, "TEST", np.float32("nan"))
-        pytest.raises(ValueError, h.set, "TEST", float("inf"))
-        pytest.raises(ValueError, h.set, "TEST", np.inf)
+        with pytest.raises(ValueError):
+            h.set("TEST", float("nan"))
+        with pytest.raises(ValueError):
+            h.set("TEST", np.nan)
+        with pytest.raises(ValueError):
+            h.set("TEST", np.float32("nan"))
+        with pytest.raises(ValueError):
+            h.set("TEST", float("inf"))
+        with pytest.raises(ValueError):
+            h.set("TEST", np.inf)
 
     def test_update_bool(self):
         """
@@ -2537,31 +2626,36 @@ class TestHeaderFunctions(FitsTestCase):
         # First ensure that we can't assign new keyword values with newlines in
         # them
         h = fits.Header()
-        pytest.raises(ValueError, h.set, "HISTORY", "\n")
-        pytest.raises(ValueError, h.set, "HISTORY", "\nabc")
-        pytest.raises(ValueError, h.set, "HISTORY", "abc\n")
-        pytest.raises(ValueError, h.set, "HISTORY", "abc\ndef")
+        with pytest.raises(ValueError):
+            h.set("HISTORY", "\n")
+        with pytest.raises(ValueError):
+            h.set("HISTORY", "\nabc")
+        with pytest.raises(ValueError):
+            h.set("HISTORY", "abc\n")
+        with pytest.raises(ValueError):
+            h.set("HISTORY", "abc\ndef")
 
         test_cards = [
-            "HISTORY File modified by user 'wilma' with fv  on 2013-04-22T21:42:18           "
-            "HISTORY File modified by user ' fred' with fv  on 2013-04-23T11:16:29           "
-            "HISTORY File modified by user ' fred' with fv  on 2013-11-04T16:59:14           "
-            "HISTORY File modified by user 'wilma' with fv  on 2013-04-22T21:42:18\nFile modif"
-            "HISTORY ied by user 'wilma' with fv  on 2013-04-23T11:16:29\nFile modified by use"
-            "HISTORY r ' fred' with fv  on 2013-11-04T16:59:14                               "
-            "HISTORY File modified by user 'wilma' with fv  on 2013-04-22T21:42:18\nFile modif"
-            "HISTORY ied by user 'wilma' with fv  on 2013-04-23T11:16:29\nFile modified by use"
-            "HISTORY r ' fred' with fv  on 2013-11-04T16:59:14\nFile modified by user 'wilma' "
-            "HISTORY with fv  on 2013-04-22T21:42:18\nFile modif\nied by user 'wilma' with fv  "
-            "HISTORY on 2013-04-23T11:16:29\nFile modified by use\nr ' fred' with fv  on 2013-1"
-            "HISTORY 1-04T16:59:14                                                           "
+            "HISTORY File modified by user 'wilma' with fv  on 2013-04-22T21:42:18           ",
+            "HISTORY File modified by user ' fred' with fv  on 2013-04-23T11:16:29           ",
+            "HISTORY File modified by user ' fred' with fv  on 2013-11-04T16:59:14           ",
+            "HISTORY File modified by user 'wilma' with fv  on 2013-04-22T21:42:18\nFile modif",
+            "HISTORY ied by user 'wilma' with fv  on 2013-04-23T11:16:29\nFile modified by use",
+            "HISTORY r ' fred' with fv  on 2013-11-04T16:59:14                               ",
+            "HISTORY File modified by user 'wilma' with fv  on 2013-04-22T21:42:18\nFile modif",
+            "HISTORY ied by user 'wilma' with fv  on 2013-04-23T11:16:29\nFile modified by use",
+            "HISTORY r ' fred' with fv  on 2013-11-04T16:59:14\nFile modified by user 'wilma' ",
+            "HISTORY with fv  on 2013-04-22T21:42:18\nFile modif\nied by user 'wilma' with fv  ",
+            "HISTORY on 2013-04-23T11:16:29\nFile modified by use\nr ' fred' with fv  on 2013-1",
+            "HISTORY 1-04T16:59:14                                                           ",
         ]
 
         for card_image in test_cards:
             c = fits.Card.fromstring(card_image)
 
             if "\n" in card_image:
-                pytest.raises(fits.VerifyError, c.verify, "exception")
+                with pytest.raises(fits.VerifyError):
+                    c.verify("exception")
             else:
                 c.verify("exception")
 
@@ -2852,7 +2946,8 @@ class TestRecordValuedKeywordCards(FitsTestCase):
         card).
         """
 
-        pytest.raises(IndexError, lambda x: self._test_header[x], 8)
+        with pytest.raises(IndexError):
+            self._test_header[8]
         # Test exception with message
         with pytest.raises(KeyError, match=r"Keyword 'DP1\.AXIS\.3' not found."):
             self._test_header["DP1.AXIS.3"]
@@ -3069,14 +3164,15 @@ class TestRecordValuedKeywordCards(FitsTestCase):
         assert "FOO.AXIS" not in h
         assert "FOO.AXIS." not in h
         assert "FOO." not in h
-        pytest.raises(KeyError, lambda: h["FOO.AXIS"])
-        pytest.raises(KeyError, lambda: h["FOO.AXIS."])
-        pytest.raises(KeyError, lambda: h["FOO."])
+        with pytest.raises(KeyError):
+            h["FOO.AXIS"]
+        with pytest.raises(KeyError):
+            h["FOO.AXIS."]
+        with pytest.raises(KeyError):
+            h["FOO."]
 
     def test_fitsheader_script(self):
         """Tests the basic functionality of the `fitsheader` script."""
-        from astropy.io.fits.scripts import fitsheader
-
         # Can an extension by specified by the EXTNAME keyword?
         hf = fitsheader.HeaderFormatter(self.data("zerowidth.fits"))
         output = hf.parse(extensions=["AIPS FQ"])
@@ -3126,9 +3222,6 @@ class TestRecordValuedKeywordCards(FitsTestCase):
 
     def test_fitsheader_table_feature(self):
         """Tests the `--table` feature of the `fitsheader` script."""
-        from astropy.io import fits
-        from astropy.io.fits.scripts import fitsheader
-
         test_filename = self.data("zerowidth.fits")
 
         formatter = fitsheader.TableHeaderFormatter(test_filename)

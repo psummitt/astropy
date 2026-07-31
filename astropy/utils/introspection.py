@@ -1,29 +1,28 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """Functions related to Python runtime introspection."""
 
-from __future__ import annotations
-
-import importlib
 import inspect
 import os
 import sys
-from importlib import metadata
+from importlib import import_module, metadata
 from importlib.metadata import packages_distributions
-from typing import TYPE_CHECKING
+from importlib.util import find_spec
+from operator import ge, gt
+from types import FrameType, ModuleType
+from typing import Literal
 
 from packaging.version import Version
 
 from .decorators import deprecated
 
-if TYPE_CHECKING:
-    from types import FrameType, ModuleType
-    from typing import Literal
-
-__all__ = ["resolve_name", "minversion", "find_current_module", "isinstancemethod"]
+__all__ = ["find_current_module", "isinstancemethod", "minversion", "resolve_name"]
 
 __doctest_skip__ = ["find_current_module"]
 
 
+@deprecated(
+    since="7.0", alternative="importlib (e.g. importlib.import_module for modules)"
+)
 def resolve_name(name: str, *additional_parts: str) -> object:
     """Resolve a name like ``module.object`` to an object and return it.
 
@@ -42,13 +41,6 @@ def resolve_name(name: str, *additional_parts: str) -> object:
     additional_parts : iterable, optional
         If more than one positional arguments are given, those arguments are
         automatically dotted together with ``name``.
-
-    Examples
-    --------
-    >>> resolve_name('astropy.utils.introspection.resolve_name')
-    <function resolve_name at 0x...>
-    >>> resolve_name('astropy', 'utils', 'introspection', 'resolve_name')
-    <function resolve_name at 0x...>
 
     Raises
     ------
@@ -102,8 +94,12 @@ def minversion(module: ModuleType | str, version: str, inclusive: bool = True) -
     ----------
     module : module or `str`
         An imported module of which to check the version, or the name of
-        that module (in which case an import of that module is attempted--
-        if this fails `False` is returned).
+        that module.
+
+        .. versionchanged:: 8.1.0
+            No dynamic import is attempted if a module is passed by name.
+            Instead, metadata is looked up from an installed package without
+            executing it.
 
     version : `str`
         The version as a string that this module must have at a minimum (e.g.
@@ -115,20 +111,14 @@ def minversion(module: ModuleType | str, version: str, inclusive: bool = True) -
 
     Examples
     --------
-    >>> import astropy
-    >>> minversion(astropy, '0.4.4')
+    >>> import numpy
+    >>> minversion(numpy, '1.21.0')
     True
     """
-    if inspect.ismodule(module):
+    if is_module := inspect.ismodule(module):
         module_name = module.__name__
-        module_version = getattr(module, "__version__", None)
     elif isinstance(module, str):
         module_name = module
-        module_version = None
-        try:
-            module = resolve_name(module_name)
-        except ImportError:
-            return False
     else:
         raise ValueError(
             "module argument must be an actual imported "
@@ -136,21 +126,29 @@ def minversion(module: ModuleType | str, version: str, inclusive: bool = True) -
             f"got {repr(module)}"
         )
 
-    if module_version is None:
-        try:
-            module_version = metadata.version(module_name)
-        except metadata.PackageNotFoundError:
-            # Maybe the distribution name is different from package name.
-            # Calling packages_distributions is costly so we do it only
-            # if necessary, as only a few packages don't have the same
-            # distribution name.
-            dist_names = packages_distributions()
-            module_version = metadata.version(dist_names[module_name][0])
+    if find_spec(module_name) is None:
+        return False
 
-    if inclusive:
-        return Version(module_version) >= Version(version)
-    else:
-        return Version(module_version) > Version(version)
+    try:
+        module_version = metadata.version(module_name)
+    except metadata.PackageNotFoundError:
+        # Maybe the distribution name is different from package name.
+        # Calling packages_distributions is costly so we do it only
+        # if necessary, as only a few packages don't have the same
+        # distribution name.
+        if module_name in (dist_names := packages_distributions()):
+            module_dist = dist_names[module_name]
+            module_version = metadata.version(module_dist[0])
+        elif is_module and hasattr(module, "__version__"):
+            # A package may be importable *but* not found in package distributions
+            # this path is reached with pyinstaller e.g. for erfa (distributed as 'pyerfa')
+            # last resort strategy
+            module_version = module.__version__
+        else:
+            raise
+
+    comp = ge if inclusive else gt
+    return comp(Version(module_version), Version(version))
 
 
 def find_current_module(
@@ -233,7 +231,7 @@ def find_current_module(
 
     """
     frm = inspect.currentframe()
-    for i in range(depth):
+    for _ in range(depth):
         frm = frm.f_back
         if frm is None:
             return None
@@ -248,7 +246,7 @@ def find_current_module(
                 if inspect.ismodule(fd):
                     diffmods.append(fd)
                 elif isinstance(fd, str):
-                    diffmods.append(importlib.import_module(fd))
+                    diffmods.append(import_module(fd))
                 elif fd is True:
                     diffmods.append(currmod)
                 else:
@@ -340,12 +338,12 @@ def find_mod_objs(modname, onlylocals=False):
         the other arguments)
 
     """
-    mod = resolve_name(modname)
+    mod = import_module(modname)
 
     if hasattr(mod, "__all__"):
-        pkgitems = [(k, mod.__dict__[k]) for k in mod.__all__]
+        pkgitems = [(k, getattr(mod, k)) for k in mod.__all__]
     else:
-        pkgitems = [(k, mod.__dict__[k]) for k in dir(mod) if k[0] != "_"]
+        pkgitems = [(k, getattr(mod, k)) for k in dir(mod) if k[0] != "_"]
 
     # filter out modules and pull the names and objs out
     ismodule = inspect.ismodule

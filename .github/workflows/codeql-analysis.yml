@@ -12,6 +12,7 @@
 name: "CodeQL"
 
 on:
+  workflow_dispatch:
   schedule:
     # run every Wednesday at 6am UTC
     - cron: '0 6 * * 3'
@@ -38,13 +39,14 @@ jobs:
 
     steps:
     - name: Checkout repository
-      uses: actions/checkout@v4
+      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
       with:
+        persist-credentials: false
         fetch-depth: 0
 
     # Initializes the CodeQL tools for scanning.
     - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
+      uses: github/codeql-action/init@5618c9fc1e675841ca52c1c6b1304f5255a905a0  # codeql-bundle-v2.19.0
       with:
         languages: ${{ matrix.language }}
         # If you wish to specify custom queries, you can do so here or in a config file.
@@ -56,7 +58,7 @@ jobs:
     # If this step fails, then you should remove it and run the build manually (see below)
     - name: Autobuild
       if: matrix.language != 'cpp'
-      uses: github/codeql-action/autobuild@v3
+      uses: github/codeql-action/autobuild@5618c9fc1e675841ca52c1c6b1304f5255a905a0  # codeql-bundle-v2.19.0
 
     # ℹ️ Command-line programs to run using the OS shell.
     # 📚 https://git.io/JvXDl
@@ -66,17 +68,17 @@ jobs:
     #    uses a compiled language
 
     - name: Set up Python
-      uses: actions/setup-python@v5
+      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
       if: matrix.language == 'cpp'
       with:
-        python-version: '3.10'
+        python-version: '3.11'
 
     - name: Manual build
       if: matrix.language == 'cpp'
       run: |
-       pip install -U pip setuptools_scm wheel
+       pip install -U pip setuptools_scm setuptools packaging wheel
        pip install extension-helpers cython numpy pyerfa
        python setup.py build_ext --inplace
 
     - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
+      uses: github/codeql-action/analyze@5618c9fc1e675841ca52c1c6b1304f5255a905a0  # codeql-bundle-v2.19.0

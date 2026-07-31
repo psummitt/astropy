@@ -19,7 +19,7 @@ from astropy.coordinates import (
     SpectralQuantity,
     get_body_barycentric_posvel,
 )
-from astropy.coordinates.sites import get_builtin_sites
+from astropy.coordinates.sites import _GREENWICH
 from astropy.coordinates.spectral_coordinate import (
     NoDistanceWarning,
     NoVelocityWarning,
@@ -27,17 +27,11 @@ from astropy.coordinates.spectral_coordinate import (
     _apply_relativistic_doppler_shift,
 )
 from astropy.table import Table
-from astropy.tests.helper import (
-    PYTEST_LT_8_0,
-    assert_quantity_allclose,
-    quantity_allclose,
-)
+from astropy.tests.helper import assert_quantity_allclose, quantity_allclose
 from astropy.utils import iers
 from astropy.utils.data import get_pkg_data_filename
 from astropy.utils.exceptions import AstropyUserWarning, AstropyWarning
 from astropy.wcs.wcsapi.fitswcs import VELOCITY_FRAMES as FITSWCS_VELOCITY_FRAMES
-
-GREENWICH = get_builtin_sites()["greenwich"]
 
 
 def assert_frame_allclose(
@@ -660,14 +654,12 @@ def test_los_shift_radial_velocity():
     sc6 = sc4.with_radial_velocity_shift(-3 * u.km / u.s)
     assert_quantity_allclose(sc6.radial_velocity, -2 * u.km / u.s)
 
-    if PYTEST_LT_8_0:
-        ctx = nullcontext()
-    else:
-        ctx = pytest.warns(
+    with (
+        pytest.warns(AstropyUserWarning, match="No velocity defined on frame"),
+        pytest.warns(
             NoDistanceWarning, match="Distance on coordinate object is dimensionless"
-        )
-
-    with pytest.warns(AstropyUserWarning, match="No velocity defined on frame"), ctx:
+        ),
+    ):
         sc7 = SpectralCoord(
             500 * u.nm,
             radial_velocity=1 * u.km / u.s,
@@ -761,7 +753,7 @@ def test_spectral_coord_jupiter():
     Checks radial velocity between Earth and Jupiter
     """
     obstime = time.Time("2018-12-13 9:00")
-    obs = GREENWICH.get_gcrs(obstime)
+    obs = _GREENWICH.get_gcrs(obstime)
 
     pos, vel = get_body_barycentric_posvel("jupiter", obstime)
     jupiter = SkyCoord(
@@ -782,7 +774,7 @@ def test_spectral_coord_alphacen():
     Checks radial velocity between Earth and Alpha Centauri
     """
     obstime = time.Time("2018-12-13 9:00")
-    obs = GREENWICH.get_gcrs(obstime)
+    obs = _GREENWICH.get_gcrs(obstime)
 
     # Coordinates were obtained from the following then hard-coded to avoid download
     # acen = SkyCoord.from_name('alpha cen')
@@ -808,7 +800,7 @@ def test_spectral_coord_m31():
     Checks radial velocity between Earth and M31
     """
     obstime = time.Time("2018-12-13 9:00")
-    obs = GREENWICH.get_gcrs(obstime)
+    obs = _GREENWICH.get_gcrs(obstime)
 
     # Coordinates were obtained from the following then hard-coded to avoid download
     # m31 = SkyCoord.from_name('M31')
@@ -857,7 +849,7 @@ def test_shift_to_rest_star_withobserver():
     rest_line_wls = [5007, 6563] * u.AA
 
     obstime = time.Time("2018-12-13 9:00")
-    obs = GREENWICH.get_gcrs(obstime)
+    obs = _GREENWICH.get_gcrs(obstime)
     acen = SkyCoord(
         ra=219.90085 * u.deg,
         dec=-60.83562 * u.deg,
@@ -889,7 +881,7 @@ def test_shift_to_rest_star_withobserver():
         frame=barycentric_spc.target.realize_frame(None),
     )
     vcorr = barytarg.radial_velocity_correction(
-        kind="barycentric", obstime=obstime, location=GREENWICH
+        kind="barycentric", obstime=obstime, location=_GREENWICH
     )
 
     drv = baryrest_spc.radial_velocity - observed_spc.radial_velocity
@@ -1039,15 +1031,11 @@ def test_spectral_coord_from_sky_coord_without_distance():
     with pytest.warns(AstropyUserWarning, match="No velocity defined on frame"):
         coord = SpectralCoord([1, 2, 3] * u.micron, observer=obs)
     # coord.target = SkyCoord.from_name('m31')  # <- original issue, but below is the same but requires no remote data access
-    if PYTEST_LT_8_0:
-        ctx = nullcontext()
-    else:
-        ctx = pytest.warns(NoVelocityWarning, match="No velocity defined on frame")
     with (
         pytest.warns(
             AstropyUserWarning, match="Distance on coordinate object is dimensionless"
         ),
-        ctx,
+        pytest.warns(NoVelocityWarning, match="No velocity defined on frame"),
     ):
         coord.target = SkyCoord(ra=10.68470833 * u.deg, dec=41.26875 * u.deg)
 
@@ -1077,15 +1065,6 @@ def test_spectralcoord_accuracy(specsys):
 
     rest = 550 * u.nm
 
-    if PYTEST_LT_8_0:
-        ctx = nullcontext()
-    else:
-        ctx = pytest.warns(
-            NoVelocityWarning,
-            match=(
-                r"^No velocity defined on frame, assuming \(0\., 0\., 0\.\) km / s\.$"
-            ),
-        )
     with iers.conf.set_temp("auto_download", False):
         for row in reference_table:
             observer = EarthLocation.from_geodetic(
@@ -1093,7 +1072,12 @@ def test_spectralcoord_accuracy(specsys):
             ).get_itrs(obstime=row["obstime"])
 
             with (
-                ctx,
+                pytest.warns(
+                    NoVelocityWarning,
+                    match=(
+                        r"^No velocity defined on frame, assuming \(0\., 0\., 0\.\) km / s\.$"
+                    ),
+                ),
                 pytest.warns(
                     NoDistanceWarning,
                     match=(
@@ -1133,6 +1117,15 @@ def test_spectralcoord_accuracy(specsys):
                     atol=0.02,
                     rtol=0.002,
                 )
+
+
+def test_spectralcoord_with_spectral_equivalency():
+    # Regression test for #19001 - enabling the `u.spectral()` equivalency could cause
+    # the relativistic Doppler shift to be applied in the wrong direction.
+    sc = SpectralCoord(250 * u.MHz, radial_velocity=1000 * u.km / u.s)
+    assert_quantity_allclose(sc.to_rest(), 250.835306 * u.MHz)  # sanity check
+    with u.set_enabled_equivalencies(u.spectral()):
+        assert_quantity_allclose(sc.to_rest(), 250.835306 * u.MHz)
 
 
 # TODO: add test when target is not ICRS

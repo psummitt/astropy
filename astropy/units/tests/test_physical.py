@@ -61,6 +61,7 @@ unit_physical_type_pairs = [
     (u.kg * u.m**2 / u.s, "angular momentum"),
     (u.rad / u.s, "angular speed"),
     (u.rad / u.s**2, "angular acceleration"),
+    (u.rad / u.s**3, "angular jerk"),
     (u.g / (u.m * u.s), "dynamic viscosity"),
     (u.m**2 / u.s, "kinematic viscosity"),
     (u.m**-1, "wavenumber"),
@@ -450,9 +451,9 @@ class TestDefPhysType:
 
         try:
             physical.def_physical_type(self.weird_unit, weird_name)
-            assert (
-                self.weird_unit.physical_type == weird_name
-            ), f"unable to set physical type for {self.weird_unit}"
+            assert self.weird_unit.physical_type == weird_name, (
+                f"unable to set physical type for {self.weird_unit}"
+            )
         finally:  # cleanup added name
             physical._attrname_physical_mapping.pop(weird_name.replace(" ", "_"), None)
             physical._name_physical_mapping.pop(weird_name, None)
@@ -485,7 +486,7 @@ class TestDefPhysType:
         """Reset the physical type of unit to "unknown"."""
         for name in list(unit.physical_type):
             del physical._unit_physical_mapping[name]
-        del physical._physical_unit_mapping[unit._get_physical_type_id()]
+        del physical._physical_unit_mapping[unit._physical_type_id]
         assert unit.physical_type == "unknown"
 
     def teardown_method(self):

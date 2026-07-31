@@ -1,7 +1,6 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 
 import functools
-import sys
 
 import numpy as np
 import pytest
@@ -11,7 +10,6 @@ from astropy.coordinates import EarthLocation
 from astropy.table import Table
 from astropy.time import Time, conf
 from astropy.utils import iers
-from astropy.utils.compat import NUMPY_LT_1_25, NUMPY_LT_1_26
 from astropy.utils.compat.optional_deps import HAS_H5PY
 from astropy.utils.masked import Masked
 
@@ -19,13 +17,6 @@ allclose_sec = functools.partial(
     np.allclose, rtol=2.0**-52, atol=2.0**-52 * 24 * 3600
 )  # 20 ps atol
 is_masked = np.ma.is_masked
-
-# The first form is expanded to r"can't set attribute '{0}'" in Python 3.10, and replaced
-# with the more informative second form as of 3.11 (python/cpython#31311).
-if sys.version_info < (3, 11):
-    no_setter_err = r"can't set attribute"
-else:
-    no_setter_err = r"property '{0}' of '{1}' object has no setter"
 
 
 def test_simple():
@@ -101,7 +92,8 @@ def test_scalar_init():
 def test_mask_not_writeable():
     t = Time("2000:001")
     with pytest.raises(
-        AttributeError, match=no_setter_err.format("mask", t.__class__.__name__)
+        AttributeError,
+        match=rf"property 'mask' of '{t.__class__.__name__}' object has no setter",
     ):
         t.mask = True
 
@@ -335,19 +327,12 @@ def test_all_formats(format_, masked_cls, masked_array_type):
         t_format = getattr(t, format_)
         tm_format = getattr(tm, format_)
         assert isinstance(tm_format, out_cls)
-        if NUMPY_LT_1_26 and format_ == "ymdhms" and out_cls is np.ma.MaskedArray:
-            # Work around https://github.com/numpy/numpy/issues/24554
-            expected = out_cls(t_format, mask=mask)
-        else:
-            expected = t_format
+        expected = t_format
         assert np.all(tm_format == expected)
 
         # Check masked scalar.
         tm0_format = getattr(tm[0], format_)
         assert isinstance(tm0_format, out_cls)
-        if NUMPY_LT_1_25 and tm0_format.dtype.kind == "M":
-            # Comparison bug in older numpy, just skip it.
-            return
         comparison = tm0_format == tm_format[0]
         assert comparison.mask
         if out_cls is Masked:
@@ -374,7 +359,7 @@ def test_all_formats(format_, masked_cls, masked_array_type):
 
 
 def test_datetime64_with_nat():
-    dt64 = np.array(["nat", "2001-02-03", "2001-02-04"], dtype="datetime64")
+    dt64 = np.array(["nat", "2001-02-03", "2001-02-04"], dtype="datetime64[ns]")
     mdt64 = Masked(dt64, mask=[False, True, False])
     t = Time(mdt64)
     assert t.masked

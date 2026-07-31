@@ -14,6 +14,7 @@ __all__ = [
     "JSViewer",
     "MaskedColumn",
     "NdarrayMixin",
+    "PprintIncludeExclude",
     "QTable",
     "Row",
     "SCEngine",
@@ -29,18 +30,17 @@ __all__ = [
     "TableReplaceWarning",
     "conf",
     "connect",
+    "dstack",
     "hstack",
     "join",
+    "join_distance",
+    "join_skycoord",
     "registry",
     "represent_mixins_as_columns",
+    "represent_nd_columns_as_1d_columns",
     "setdiff",
     "unique",
     "vstack",
-    "dstack",
-    "conf",
-    "join_skycoord",
-    "join_distance",
-    "PprintIncludeExclude",
 ]
 
 
@@ -68,6 +68,7 @@ class Conf(_config.ConfigNamespace):
         "'always', 'slice', 'refcount', 'attributes'.",
         "string_list",
     )
+
     replace_inplace = _config.ConfigItem(
         False,
         "Always use in-place update of a table column when using setitem, "
@@ -75,6 +76,15 @@ class Conf(_config.ConfigNamespace):
         "replacing the column entirely with the new value when possible. "
         "This configuration option will be deprecated and then removed in "
         "subsequent major releases.",
+    )
+
+    format_size_threshold = _config.ConfigItem(
+        1,
+        "Maximum total size (product of all dimensions except the first) for displaying full multidimensional column elements. "
+        "If the size exceeds this threshold, only the first and last elements are shown with '..'. "
+        "Otherwise, the full element is displayed. Default is 1 which shows only first and last (e.g., '1 .. 5'). "
+        "Set to a large value like sys.maxsize for no limit.",
+        cfgtype="integer",
     )
 
 
@@ -98,7 +108,11 @@ from .operations import (
     unique,
     vstack,
 )
-from .serialize import SerializedColumn, represent_mixins_as_columns
+from .serialize import (
+    SerializedColumn,
+    represent_mixins_as_columns,
+    represent_nd_columns_as_1d_columns,
+)
 from .soco import SCEngine
 from .sorted_array import SortedArray
 from .table import (

@@ -4,7 +4,7 @@
 # then add objects to tables that are not formally mixin columns and where
 # adding an info attribute is beyond our control.
 
-__all__ = ["MixinRegistryError", "register_mixin_handler", "get_mixin_handler"]
+__all__ = ["MixinRegistryError", "get_mixin_handler", "register_mixin_handler"]
 
 # The internal dictionary of handlers maps fully qualified names of classes
 # to a function that can take an object and return a mixin-compatible object.
@@ -63,9 +63,7 @@ def get_mixin_handler(obj):
     if isinstance(obj, str):
         return _handlers.get(obj)
     else:
-        return _handlers.get(
-            obj.__class__.__module__ + "." + obj.__class__.__name__, None
-        )
+        return _handlers.get(obj.__class__.__module__ + "." + obj.__class__.__name__)
 
 
 # Add built-in handlers to registry. Note that any third-party package imports

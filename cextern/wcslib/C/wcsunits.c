@@ -1,6 +1,6 @@
 /*============================================================================
-  WCSLIB 8.2 - an implementation of the FITS WCS standard.
-  Copyright (C) 1995-2023, Mark Calabretta
+  WCSLIB 8.9 - an implementation of the FITS WCS standard.
+  Copyright (C) 1995-2026, Mark Calabretta
 
   This file is part of WCSLIB.
 
@@ -18,8 +18,8 @@
   along with WCSLIB.  If not, see http://www.gnu.org/licenses.
 
   Author: Mark Calabretta, Australia Telescope National Facility, CSIRO.
-  http://www.atnf.csiro.au/people/Mark.Calabretta
-  $Id: wcsunits.c,v 8.2.1.1 2023/11/16 10:05:57 mcalabre Exp mcalabre $
+  http://www.atnf.csiro.au/computing/software/wcs
+  $Id: wcsunits.c,v 8.9 2026/06/18 13:00:03 mcalabre Exp $
 *===========================================================================*/
 
 #include <math.h>
@@ -109,6 +109,11 @@ int wcsunitse(
 
   int status;
 
+  // Compiler balm for premature return on error.
+  *scale  = 0.0;
+  *offset = 0.0;
+  *power  = 1.0;
+
   int    func1;
   double scale1, units1[WCSUNITS_NTYPE];
   if ((status = wcsulexe(have, &func1, &scale1, units1, err))) {
@@ -129,10 +134,6 @@ int wcsunitse(
         wcsunits_types[i], have, want);
     }
   }
-
-  *scale  = 0.0;
-  *offset = 0.0;
-  *power  = 1.0;
 
   switch (func1) {
   case 0:

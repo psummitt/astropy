@@ -1,15 +1,15 @@
 # Licensed under a 3-clause BSD style license - see LICENSE.rst
 """
-This file contains pytest configuration settings that are astropy-specific
-(i.e.  those that would not necessarily be shared by affiliated packages
-making use of astropy's test runner).
+This file contains pytest configuration settings that are astropy-specific.
 """
 
 import builtins
 import os
 import sys
-import tempfile
 import warnings
+from dataclasses import replace
+from pathlib import Path
+from threading import Lock
 
 try:
     from pytest_astropy_header.display import PYTEST_HEADER_MODULES, TESTED_VERSIONS
@@ -20,24 +20,6 @@ except ImportError:
 import pytest
 
 from astropy import __version__
-from astropy.utils.compat.numpycompat import NUMPY_LT_2_0
-
-if not NUMPY_LT_2_0:
-    import numpy as np
-
-    np.set_printoptions(legacy="1.25")
-
-# This is needed to silence a warning from matplotlib caused by
-# PyInstaller's matplotlib runtime hook.  This can be removed once the
-# issue is fixed upstream in PyInstaller, and only impacts us when running
-# the tests from a PyInstaller bundle.
-# See https://github.com/astropy/astropy/issues/10785
-if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
-    # The above checks whether we are running in a PyInstaller bundle.
-    warnings.filterwarnings("ignore", "(?s).*MATPLOTLIBDATA.*", category=UserWarning)
-
-# Note: while the filterwarnings is required, this import has to come after the
-# filterwarnings above, because this attempts to import matplotlib:
 from astropy.utils.compat.optional_deps import HAS_MATPLOTLIB
 
 if HAS_MATPLOTLIB:
@@ -68,10 +50,82 @@ def fast_thread_switching():
     sys.setswitchinterval(old)
 
 
+_IGNORE_CONFIG_PATHS_GLOBAL_STATE_LOCK = Lock()
+
+
+@pytest.fixture
+def ignore_config_paths_global_state(monkeypatch, tmp_path_factory):
+    import astropy.config.paths
+
+    # ignore global state of the test session
+    # and preserve thread safety across all users of this fixture
+    with _IGNORE_CONFIG_PATHS_GLOBAL_STATE_LOCK:
+        monkeypatch.delenv("ASTROPY_CACHE_DIR", raising=False)
+        monkeypatch.delenv("ASTROPY_CONFIG_DIR", raising=False)
+        monkeypatch.delenv("XDG_CACHE_HOME", raising=False)
+        monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+
+        pristine_cache_finder = replace(
+            astropy.config.paths._finders.cache,
+            overrides={},
+        )
+        monkeypatch.setattr(
+            astropy.config.paths._finders,
+            "cache",
+            pristine_cache_finder,
+        )
+        pristine_config_finder = replace(
+            astropy.config.paths._finders.config,
+            overrides={},
+        )
+        monkeypatch.setattr(
+            astropy.config.paths._finders,
+            "config",
+            pristine_config_finder,
+        )
+
+        if "HOME" in os.environ:
+            # also mock $HOME as it's part of the global state taken into account
+            # for path detection
+            mock_home_dir = tmp_path_factory.mktemp("MOCK_HOME")
+
+            def mock_home():
+                return mock_home_dir
+
+            monkeypatch.setattr(Path, "home", mock_home)
+
+        yield
+
+
+# Make sure we use temporary directories for the config and cache
+# so that the tests are insensitive to local configuration. Note that this
+# is also set in the test runner, but we need to also set it here for
+# things to work properly in parallel mode
+# note: session-level + autouse doesn't require a cleanup phase
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_level_cache_dir(tmp_path_factory):
+    os.environ["ASTROPY_CACHE_DIR"] = str(tmp_path_factory.mktemp("astropy_cache_"))
+    os.environ["XDG_CACHE_HOME"] = str(tmp_path_factory.mktemp("xdg_cache_"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _session_level_config_dir(tmp_path_factory):
+    os.environ["ASTROPY_CONFIG_DIR"] = str(tmp_path_factory.mktemp("astropy_config_"))
+    os.environ["XDG_CONFIG_HOME"] = str(tmp_path_factory.mktemp("xdg_config_"))
+
+
 def pytest_configure(config):
-    from astropy.utils.iers import conf as iers_conf
+    # Ensure number of columns and lines is deterministic for testing
+    from astropy import conf
+
+    conf.max_width = 80
+    conf.max_lines = 24
 
     # Disable IERS auto download for testing
+    from astropy.utils.iers import conf as iers_conf
+
     iers_conf.auto_download = False
 
     builtins._pytest_running = True
@@ -82,20 +136,6 @@ def pytest_configure(config):
             matplotlibrc_cache.update(mpl.rcParams)
             mpl.rcdefaults()
             mpl.use("Agg")
-
-    # Make sure we use temporary directories for the config and cache
-    # so that the tests are insensitive to local configuration. Note that this
-    # is also set in the test runner, but we need to also set it here for
-    # things to work properly in parallel mode
-
-    builtins._xdg_config_home_orig = os.environ.get("XDG_CONFIG_HOME")
-    builtins._xdg_cache_home_orig = os.environ.get("XDG_CACHE_HOME")
-
-    os.environ["XDG_CONFIG_HOME"] = tempfile.mkdtemp("astropy_config")
-    os.environ["XDG_CACHE_HOME"] = tempfile.mkdtemp("astropy_cache")
-
-    os.mkdir(os.path.join(os.environ["XDG_CONFIG_HOME"], "astropy"))
-    os.mkdir(os.path.join(os.environ["XDG_CACHE_HOME"], "astropy"))
 
     config.option.astropy_header = True
     PYTEST_HEADER_MODULES["PyERFA"] = "erfa"
@@ -119,11 +159,34 @@ def pytest_configure(config):
             threads_per_worker = max(max_threads // int(xdist_worker_count), 1)
             threadpool_limits(threads_per_worker)
 
+    config.addinivalue_line(
+        "markers",
+        "only_optimized_interpreter: mark a test as skipped if the interpreter is not running with -OO flags",
+    )
+    config.addinivalue_line(
+        "markers",
+        "no_optimized_interpreter: mark a test as skipped if the interpreter is running with -OO flags",
+    )
+
+
+def pytest_runtest_setup(item):
+    for m in item.iter_markers():
+        if m.name == "only_optimized_interpreter" and sys.flags.optimize < 2:
+            pytest.skip("interpreter isn't running in optimized mode")
+        if m.name == "no_optimized_interpreter" and sys.flags.optimize >= 2:
+            pytest.skip("interpreter is running in optimized mode")
+
 
 def pytest_unconfigure(config):
-    from astropy.utils.iers import conf as iers_conf
+    # Undo settings related to number of lines/columns to show
+    from astropy import conf
+
+    conf.reset("max_width")
+    conf.reset("max_lines")
 
     # Undo IERS auto download setting for testing
+    from astropy.utils.iers import conf as iers_conf
+
     iers_conf.reset("auto_download")
 
     builtins._pytest_running = False
@@ -134,21 +197,12 @@ def pytest_unconfigure(config):
             mpl.rcParams.update(matplotlibrc_cache)
             matplotlibrc_cache.clear()
 
-    if builtins._xdg_config_home_orig is None:
-        os.environ.pop("XDG_CONFIG_HOME")
-    else:
-        os.environ["XDG_CONFIG_HOME"] = builtins._xdg_config_home_orig
-
-    if builtins._xdg_cache_home_orig is None:
-        os.environ.pop("XDG_CACHE_HOME")
-    else:
-        os.environ["XDG_CACHE_HOME"] = builtins._xdg_cache_home_orig
-
 
 def pytest_terminal_summary(terminalreporter):
     """Output a warning to IPython users in case any tests failed."""
     try:
-        get_ipython()
+        # this name is only defined if running within ipython/jupyter
+        __IPYTHON__  # noqa: B018
     except NameError:
         return
 

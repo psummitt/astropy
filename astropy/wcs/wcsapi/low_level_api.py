@@ -11,7 +11,7 @@ class BaseLowLevelWCS(metaclass=abc.ABCMeta):
     Abstract base class for the low-level WCS interface.
 
     This is described in `APE 14: A shared Python interface for World Coordinate
-    Systems <https://doi.org/10.5281/zenodo.1188875>`_.
+    Systems <https://zenodo.org/records/11566733>`_.
     """
 
     @property
@@ -64,7 +64,7 @@ class BaseLowLevelWCS(metaclass=abc.ABCMeta):
         `~astropy.wcs.wcsapi.BaseLowLevelWCS.world_n_dim` scalars or arrays in units given by
         `~astropy.wcs.wcsapi.BaseLowLevelWCS.world_axis_units`. Note that pixel coordinates are
         assumed to be 0 at the center of the first pixel in each dimension. If a
-        pixel is in a region where the WCS is not defined, NaN can be returned.
+        pixel is in a region where the WCS is not defined, NaN should be returned.
         The coordinates should be specified in the ``(x, y)`` order, where for
         an image, ``x`` is the horizontal coordinate and ``y`` is the vertical
         coordinate.
@@ -99,7 +99,7 @@ class BaseLowLevelWCS(metaclass=abc.ABCMeta):
         `~astropy.wcs.wcsapi.BaseLowLevelWCS.pixel_n_dim` scalars or arrays. Note that pixel
         coordinates are assumed to be 0 at the center of the first pixel in each
         dimension. If a world coordinate does not have a matching pixel
-        coordinate, NaN can be returned.  The coordinates should be returned in
+        coordinate, NaN should be returned.  The coordinates should be returned in
         the ``(x, y)`` order, where for an image, ``x`` is the horizontal
         coordinate and ``y`` is the vertical coordinate.
 
@@ -162,7 +162,7 @@ class BaseLowLevelWCS(metaclass=abc.ABCMeta):
 
         See the document
         `APE 14: A shared Python interface for World Coordinate Systems
-        <https://doi.org/10.5281/zenodo.1188875>`_ for examples.
+        <https://zenodo.org/records/11566733>`_ for examples.
         """
 
     @property
@@ -218,7 +218,7 @@ class BaseLowLevelWCS(metaclass=abc.ABCMeta):
 
         See the document
         `APE 14: A shared Python interface for World Coordinate Systems
-        <https://doi.org/10.5281/zenodo.1188875>`_ for examples .
+        <https://zenodo.org/records/11566733>`_ for examples.
         """
 
     # The following three properties have default fallback implementations, so
@@ -274,6 +274,9 @@ class BaseLowLevelWCS(metaclass=abc.ABCMeta):
         within a certain range of pixel values, for example when defining a
         WCS that includes fitted distortions. This is an optional property,
         and it should return `None` if a shape is not known or relevant.
+
+        The bounds can be a mix of values along dimensions where bounds exist,
+        and None for other dimensions, e.g. ``[(xmin, xmax), None]``.
         """
         return None
 

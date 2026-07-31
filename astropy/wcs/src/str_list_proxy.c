@@ -6,12 +6,13 @@
 #define NO_IMPORT_ARRAY
 
 #include "astropy_wcs/pyutil.h"
+#include <stdlib.h> // malloc, free
 
 /***************************************************************************
  * List-of-strings proxy object
  ***************************************************************************/
 
-static PyTypeObject PyStrListProxyType;
+static PyObject* StrListProxyType;
 
 typedef struct {
   PyObject_HEAD
@@ -19,26 +20,30 @@ typedef struct {
   Py_ssize_t size;
   Py_ssize_t maxsize;
   char (*array)[72];
-} PyStrListProxy;
+} StrListProxy;
 
 static void
-PyStrListProxy_dealloc(
-    PyStrListProxy* self) {
+StrListProxy_dealloc(
+    StrListProxy* self) {
 
   PyObject_GC_UnTrack(self);
   Py_XDECREF(self->pyobject);
-  Py_TYPE(self)->tp_free((PyObject*)self);
+  PyTypeObject *tp = Py_TYPE((PyObject*)self);
+  freefunc free_func = PyType_GetSlot(tp, Py_tp_free);
+  free_func((PyObject*)self);
+  Py_DECREF(tp);
 }
 
 /*@null@*/ static PyObject *
-PyStrListProxy_new(
+StrListProxy_new(
     PyTypeObject* type,
     /*@unused@*/ PyObject* args,
     /*@unused@*/ PyObject* kwds) {
 
-  PyStrListProxy* self = NULL;
+  StrListProxy* self = NULL;
 
-  self = (PyStrListProxy*)type->tp_alloc(type, 0);
+  allocfunc alloc_func = PyType_GetSlot(type, Py_tp_alloc);
+  self = (StrListProxy*)alloc_func(type, 0);
   if (self != NULL) {
     self->pyobject = NULL;
   }
@@ -46,18 +51,19 @@ PyStrListProxy_new(
 }
 
 static int
-PyStrListProxy_traverse(
-    PyStrListProxy* self,
+StrListProxy_traverse(
+    StrListProxy* self,
     visitproc visit,
     void *arg) {
 
   Py_VISIT(self->pyobject);
+  Py_VISIT((PyObject*)Py_TYPE((PyObject*)self));
   return 0;
 }
 
 static int
-PyStrListProxy_clear(
-    PyStrListProxy *self) {
+StrListProxy_clear(
+    StrListProxy *self) {
 
   Py_CLEAR(self->pyobject);
 
@@ -65,19 +71,21 @@ PyStrListProxy_clear(
 }
 
 /*@null@*/ PyObject *
-PyStrListProxy_New(
+StrListProxy_New(
     /*@shared@*/ PyObject* owner,
     Py_ssize_t size,
     Py_ssize_t maxsize,
     char (*array)[72]) {
 
-  PyStrListProxy* self = NULL;
+  StrListProxy* self = NULL;
 
   if (maxsize == 0) {
     maxsize = 68;
   }
 
-  self = (PyStrListProxy*)PyStrListProxyType.tp_alloc(&PyStrListProxyType, 0);
+  PyTypeObject* tp = (PyTypeObject*)StrListProxyType;
+  allocfunc alloc_func = PyType_GetSlot(tp, Py_tp_alloc);
+  self = (StrListProxy*)alloc_func(tp, 0);
   if (self == NULL) {
     return NULL;
   }
@@ -91,15 +99,15 @@ PyStrListProxy_New(
 }
 
 static Py_ssize_t
-PyStrListProxy_len(
-    PyStrListProxy* self) {
+StrListProxy_len(
+    StrListProxy* self) {
 
   return self->size;
 }
 
 /*@null@*/ static PyObject*
-PyStrListProxy_getitem(
-    PyStrListProxy* self,
+StrListProxy_getitem(
+    StrListProxy* self,
     Py_ssize_t index) {
 
   if (index >= self->size || index < 0) {
@@ -111,8 +119,8 @@ PyStrListProxy_getitem(
 }
 
 static int
-PyStrListProxy_setitem(
-    PyStrListProxy* self,
+StrListProxy_setitem(
+    StrListProxy* self,
     Py_ssize_t index,
     PyObject* arg) {
 
@@ -191,71 +199,39 @@ str_list_proxy_repr(
 }
 
 /*@null@*/ static PyObject*
-PyStrListProxy_repr(
-    PyStrListProxy* self) {
+StrListProxy_repr(
+    StrListProxy* self) {
 
   return str_list_proxy_repr(self->array, self->size, self->maxsize);
 }
 
-static PySequenceMethods PyStrListProxy_sequence_methods = {
-  (lenfunc)PyStrListProxy_len,
-  NULL,
-  NULL,
-  (ssizeargfunc)PyStrListProxy_getitem,
-  NULL,
-  (ssizeobjargproc)PyStrListProxy_setitem,
-  NULL,
-  NULL,
-  NULL,
-  NULL
+static PyType_Spec StrListProxyType_spec = {
+  .name = "astropy.wcs.StrListProxy",
+  .basicsize = sizeof(StrListProxy),
+  .itemsize = 0,
+  .flags = Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,
+  .slots = (PyType_Slot[]){
+    {Py_tp_dealloc, (destructor)StrListProxy_dealloc},
+    {Py_tp_repr, (reprfunc)StrListProxy_repr},
+    {Py_sq_length, (lenfunc)StrListProxy_len},
+    {Py_sq_item, (ssizeargfunc)StrListProxy_getitem},
+    {Py_sq_ass_item, (ssizeobjargproc)StrListProxy_setitem},
+    {Py_tp_str, (reprfunc)StrListProxy_repr},
+    {Py_tp_traverse, (traverseproc)StrListProxy_traverse},
+    {Py_tp_clear, (inquiry)StrListProxy_clear},
+    {Py_tp_new, (newfunc)StrListProxy_new},
+    {0, NULL},
+  },
 };
 
-static PyTypeObject PyStrListProxyType = {
-  PyVarObject_HEAD_INIT(NULL, 0)
-  "astropy.wcs.StrListProxy", /*tp_name*/
-  sizeof(PyStrListProxy),  /*tp_basicsize*/
-  0,                          /*tp_itemsize*/
-  (destructor)PyStrListProxy_dealloc, /*tp_dealloc*/
-  0,                          /*tp_print*/
-  0,                          /*tp_getattr*/
-  0,                          /*tp_setattr*/
-  0,                          /*tp_compare*/
-  (reprfunc)PyStrListProxy_repr, /*tp_repr*/
-  0,                          /*tp_as_number*/
-  &PyStrListProxy_sequence_methods, /*tp_as_sequence*/
-  0,                          /*tp_as_mapping*/
-  0,                          /*tp_hash */
-  0,                          /*tp_call*/
-  (reprfunc)PyStrListProxy_repr, /*tp_str*/
-  0,                          /*tp_getattro*/
-  0,                          /*tp_setattro*/
-  0,                          /*tp_as_buffer*/
-  Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC, /*tp_flags*/
-  0,                          /* tp_doc */
-  (traverseproc)PyStrListProxy_traverse, /* tp_traverse */
-  (inquiry)PyStrListProxy_clear, /* tp_clear */
-  0,                          /* tp_richcompare */
-  0,                          /* tp_weaklistoffset */
-  0,                          /* tp_iter */
-  0,                          /* tp_iternext */
-  0,                          /* tp_methods */
-  0,                          /* tp_members */
-  0,                          /* tp_getset */
-  0,                          /* tp_base */
-  0,                          /* tp_dict */
-  0,                          /* tp_descr_get */
-  0,                          /* tp_descr_set */
-  0,                          /* tp_dictoffset */
-  0,                          /* tp_init */
-  0,                          /* tp_alloc */
-  PyStrListProxy_new,      /* tp_new */
-};
+static PyObject* StrListProxyType = NULL;
 
 int
 _setup_str_list_proxy_type(
     /*@unused@*/ PyObject* m) {
 
-  if (PyType_Ready(&PyStrListProxyType) < 0) {
+  StrListProxyType = PyType_FromSpec(&StrListProxyType_spec);
+  if (StrListProxyType == NULL) {
     return 1;
   }
 

@@ -178,7 +178,7 @@ Accessing Properties
 
 The code below shows accessing the table columns as a |TableColumns| object,
 getting the column names, table metadata, and number of table rows. The table
-metadata is an `~collections.OrderedDict` by default.
+metadata is a :class:`dict` by default.
 ::
 
   >>> t.columns
@@ -210,7 +210,7 @@ column with a numerical index::
 
 
   >>> t['a'][1]  # Row 1 of column 'a'
-  3
+  np.int32(3)
 
 When a table column is printed, it is formatted according to the ``format``
 attribute (see :ref:`table_format_string`). Note the difference between the
@@ -237,7 +237,7 @@ Likewise a table row and a column from that row can be selected::
      3.000     4     5
 
   >>> t[1]['a']  # Column 'a' of row 1
-  3
+  np.int32(3)
 
 A |Row| object has the same columns and metadata as its parent table::
 
@@ -341,7 +341,7 @@ In case of a single |Row| it is possible to use its
 
     >>> row = t[2]
     >>> row.get("c", -1)
-    8
+    np.int32(8)
     >>> row.get("y", -1)
     -1
 
@@ -445,6 +445,9 @@ To print a formatted table::
 
   >>> arr = np.arange(3000).reshape(100, 30)  # 100 rows x 30 columns array
   >>> t = Table(arr)
+  >>> from astropy.table import conf
+  >>> conf.max_width = 80
+  >>> conf.max_lines = 20
   >>> print(t)
   col0 col1 col2 col3 col4 col5 col6 ... col23 col24 col25 col26 col27 col28 col29
   ---- ---- ---- ---- ---- ---- ---- ... ----- ----- ----- ----- ----- ----- -----
@@ -471,7 +474,7 @@ To print a formatted table::
   2970 2971 2972 2973 2974 2975 2976 ...  2993  2994  2995  2996  2997  2998  2999
   Length = 100 rows
 
-.. EXAMPLE END
+  .. EXAMPLE END
 
 more() method
 ^^^^^^^^^^^^^
@@ -798,9 +801,26 @@ column name header::
   3.0 .. 40.0
   5.0 .. 60.0
 
-In order to see all of the data values for a multidimensional column use the
-column representation. This uses the standard ``numpy`` mechanism for printing
-any array::
+
+There are two ways to see all of the data values for a multidimensional column. First,
+you can set the ``astropy.table.conf.format_size_threshold`` configuration option
+to a value greater than or equal to the number of items in each column row (4 in this
+case). This respects any formatting options that are defined for the column.
+
+.. code-block:: python
+
+  >>> from astropy.table import conf
+  >>> with conf.set_temp("format_size_threshold", 4):
+  ...     t.pprint()
+  ...
+         a
+  -----------------------
+  [[1.0 2.0] [10.0 20.0]]
+  [[3.0 4.0] [30.0 40.0]]
+  [[5.0 6.0] [50.0 60.0]]
+
+A second option is to print the column as a ``numpy`` array which uses the
+standard ``numpy`` mechanism for printing the array::
 
   >>> t['a'].data
   array([[[ 1.,  2.],
@@ -817,7 +837,7 @@ Structured array columns
 
 .. EXAMPLE START: Creating a formatted Astropy Table with a Structured Column
 
-For columns which are structured arrays, the format string must be a a string
+For columns which are structured arrays, the format string must be a string
 that uses `"new style" format strings
 <https://docs.python.org/3/library/string.html#format-string-syntax>`_  with
 parameter substitutions corresponding to the field names in the structured
@@ -834,10 +854,10 @@ the value, min and max are stored in the in the column as fields named ``val``,
     >>> t['a'] = [1, 2]
     >>> t['par'] = pars
     >>> print(t)
-     a    par [val, min, max]
-    --- ------------------------
-      1    (1.2345678, -20., 3.)
-      2 (12.345678, 4.5678, 33.)
+     a     par [val, min, max]
+    --- -------------------------
+      1   (1.2345678, -20.0, 3.0)
+      2 (12.345678, 4.5678, 33.0)
 
 
 However, setting the format string appropriately allows formatting each of the

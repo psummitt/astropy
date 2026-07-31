@@ -8,13 +8,13 @@ Table Indexing
 
 Once a |Table| has been created, it is possible to create indices on one or
 more columns of the table. An index internally sorts the rows of a table based
-on the index column(s), allowing for element retrieval by column value and
+on the index column(s), allowing for element retrieval by column value(s) and
 improved performance for certain table operations.
 
 Creating an Index
 =================
 
-.. EXAMPLE START: Creating Indexes on Table Columns
+.. EXAMPLE START: Creating Indices on Table Columns
 
 To create an index on a table, use the |add_index| method::
 
@@ -98,12 +98,13 @@ range of column values (*including* the bounds), or a :class:`list` or
        3     9
        4     9
 
-Note that by default, `~astropy.table.Table.loc` uses the primary index, which
-here is column ``'a'``. To use a different index, pass the indexed column name
-before the retrieval data::
+Using multiple indices
+----------------------
+By default, `~astropy.table.Table.loc` uses the primary index, which
+here is column ``'a'``. You can use a different index with the ``with_index`` method as shown below::
 
    >>> t.add_index('b')
-   >>> t.loc['b', 8:10]
+   >>> t.loc.with_index('b')[8:10]
    <Table length=3>
      a     b
    int64 int64
@@ -111,6 +112,36 @@ before the retrieval data::
        3     9
        4     9
        1    10
+
+The ``with_index`` method takes an index identifier as input, where the format is
+flexible as shown in these examples::
+
+   >>> t.add_index(['a', 'b'])
+   >>> t.loc  # defaults to primary key  # doctest: +IGNORE_OUTPUT
+   >>> t.loc.with_index('b')[10]  # doctest: +IGNORE_OUTPUT
+   >>> t.loc.with_index(['b'])[[10, 9]]  # doctest: +IGNORE_OUTPUT
+   >>> t.loc.with_index('a', 'b')[1, 10]  # doctest: +IGNORE_OUTPUT
+   >>> t.loc.with_index(['a', 'b'])[1, 10]  # doctest: +IGNORE_OUTPUT
+
+Using a multi-column index
+--------------------------
+You can create an index on multiple table columns and select table rows that match all
+values of the indexed columns::
+
+   >>> t.add_index(["a", "b"])
+   >>> t.loc.with_index("a", "b")[3, 9]
+   <Row index=2>
+     a     b
+   int64 int64
+   ----- -----
+       3     9
+   >>> t.loc.with_index("a", "b")[[(3, 9), (4, 9)]]
+   <Table length=2>
+     a     b
+   int64 int64
+   ----- -----
+       3     9
+       4     9
 
 The property `~astropy.table.Table.iloc` works similarly, except that the
 retrieval information must be either an integer or a :class:`slice`, and
@@ -123,7 +154,7 @@ example::
    int64 int64
    ----- -----
        1    10
-   >>> t.iloc['b', 1:] # all but smallest value of 'b'
+   >>> t.iloc.with_index('b')[1:] # all but smallest value of 'b'
    <Table length=3>
      a     b
    int64 int64
@@ -167,6 +198,8 @@ manager. There are currently three indexing modes: ``'freeze'``,
 The ``'freeze'`` mode prevents automatic index updates whenever a column of the
 index is modified, and all indices refresh themselves after the context ends::
 
+  >>> t = Table([(1, 2, 3, 4), (10, 1, 9, 9)], names=('a', 'b'), dtype=['i8', 'i8'])
+  >>> t.add_index('a')
   >>> with t.index_mode('freeze'):
   ...    t['a'][0] = 0
   ...    print(t.indices['a']) # unmodified
@@ -288,9 +321,26 @@ property can be indexed either by column value, range of column values
    >>> t = Table([('w', 'x', 'y', 'z'), (10, 1, 9, 9)], names=('a', 'b'), dtype=['str', 'i8'])
    >>> t.add_index('a')
    >>> t.loc_indices['x']
-   1
+   np.int64(1)
 
 .. EXAMPLE END
+
+Storing the Table Indices to File
+=================================
+
+You can write a table with indices to FITS, ECVS, or HDF5 formats by supplying
+``write_indices=True`` in the call to the table `~astropy.table.Table.write` method. In
+this case the row index values are included in the table column data and column metadata
+to describe the indices is stored. This allows efficiently restoring the table index or
+indices when the data file is read back in. For an indexed table ``t``, you can do the
+following::
+
+    >>> t.write("data.fits", write_indices=True) # doctest: +SKIP
+    >>> t.write("data.ecsv", write_indices=True) # doctest: +SKIP
+    >>> t.write("data.hdf5", write_indices=True, path="root", serialize_meta=True) # doctest: +SKIP
+    >>> t_fits = Table.read("data.fits", astropy_native=True)  # doctest: +SKIP
+    >>> t_ecsv = Table.read("data.ecsv")  # doctest: +SKIP
+    >>> t_hdf5 = Table.read("data.hdf5", path="root")  # doctest: +SKIP
 
 Engines
 =======
@@ -302,13 +352,18 @@ specified to use a particular indexing engine. The available engines are:
   sorted |Table|.
 * `~astropy.table.SCEngine`, a sorted list engine using the `Sorted Containers
   <https://pypi.org/project/sortedcontainers/>`_ package.
-* `~astropy.table.BST`, a Python-based binary search tree engine (not recommended).
+* `~astropy.table.BST`, a Python-based binary search tree engine (not recommended, deprecated).
 
 The SCEngine depends on the ``sortedcontainers`` dependency. The most important takeaway is that
 `~astropy.table.SortedArray` (the default engine) is usually best, although
 `~astropy.table.SCEngine` may be more appropriate for an index created on an
 empty column since adding new values is quicker.
 
-The `~astropy.table.BST` engine demonstrates a simple pure Python implementation
-of a search tree engine, but the performance is poor for larger tables. This
-is available in the code largely as an implementation reference.
+.. deprecated:: 8.1
+
+   The `~astropy.table.BST` engine demonstrates a simple pure Python
+   implementation of a search tree engine, but the performance is poor for
+   larger tables and it was available in the code largely as an implementation
+   reference. It is deprecated and will be removed in a future version; use
+   `~astropy.table.SortedArray` (the default engine) or
+   `~astropy.table.SCEngine` instead.

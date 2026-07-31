@@ -15,7 +15,7 @@ from setuptools import Extension
 from extension_helpers import get_compiler, import_file, pkg_config, write_if_different
 
 WCSROOT = os.path.relpath(os.path.dirname(__file__))
-WCSVERSION = "8.2.2"
+WCSVERSION = "8.9"
 
 
 def b(s):
@@ -195,8 +195,8 @@ def get_wcslib_cfg(cfg, wcslib_files, include_paths):
     )
 
     if (
-        int(os.environ.get("ASTROPY_USE_SYSTEM_WCSLIB", 0))
-        or int(os.environ.get("ASTROPY_USE_SYSTEM_ALL", 0))
+        int(os.environ.get("ASTROPY_USE_SYSTEM_WCSLIB", "0"))
+        or int(os.environ.get("ASTROPY_USE_SYSTEM_ALL", "0"))
     ) and not sys.platform == "win32":
         wcsconfig_h_path = join(WCSROOT, "include", "wcsconfig.h")
         if os.path.exists(wcsconfig_h_path):
@@ -210,6 +210,16 @@ def get_wcslib_cfg(cfg, wcslib_files, include_paths):
         wcslib_cpath = join(wcslib_path, "C")  # Path to wcslib source files
         cfg["sources"].extend(join(wcslib_cpath, x) for x in wcslib_files)
         cfg["include_dirs"].append(wcslib_cpath)
+
+        # WCSLIB's wcsprintf.c declares its module-static output buffer with the
+        # thread-local storage specifier WCSLIB_TLS so concurrent callers each
+        # get their own buffer.  Upstream supplies this via configure
+        # (-DWCSLIB_TLS=...), but astropy compiles the bundled sources without
+        # running configure, so define it here per compiler.
+        if get_compiler() == "msvc":
+            cfg["define_macros"].append(("WCSLIB_TLS", "__declspec(thread)"))
+        else:
+            cfg["define_macros"].append(("WCSLIB_TLS", "__thread"))
 
     if debug:
         cfg["define_macros"].append(("DEBUG", None))
@@ -338,8 +348,8 @@ def get_extensions():
     ]
 
     if not (
-        int(os.environ.get("ASTROPY_USE_SYSTEM_WCSLIB", 0))
-        or int(os.environ.get("ASTROPY_USE_SYSTEM_ALL", 0))
+        int(os.environ.get("ASTROPY_USE_SYSTEM_WCSLIB", "0"))
+        or int(os.environ.get("ASTROPY_USE_SYSTEM_ALL", "0"))
     ):
         for header in wcslib_headers:
             source = Path("cextern", "wcslib", "C", header)

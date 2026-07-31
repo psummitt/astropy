@@ -61,7 +61,7 @@ def normal(
         if std is None:
             std = np.asanyarray(ivar) ** -0.5
         else:
-            raise ValueError("normal cannot take both ivar and and std or var")
+            raise ValueError("normal cannot take both ivar and std or var")
     if std is None:
         raise ValueError("normal requires one of std, var, or ivar")
     else:
@@ -149,7 +149,7 @@ def uniform(
     **kwargs,
 ):
     """
-    Create a Uniform distriution from the lower and upper bounds.
+    Create a Uniform distribution from the lower and upper bounds.
 
     Note that this function requires keywords to be explicit, and requires
     either ``lower``/``upper`` or ``center``/``width``.
@@ -199,11 +199,8 @@ def uniform(
         )
 
     newshape = lower.shape + (n_samples,)
-    if lower.shape == tuple() and upper.shape == tuple():
-        width = upper - lower  # scalar
-    else:
-        width = (upper - lower)[:, np.newaxis]
-        lower = lower[:, np.newaxis]
+    width = (upper - lower)[..., np.newaxis]
+    lower = lower[..., np.newaxis]
     samples = lower + width * np.random.uniform(size=newshape)
 
     return cls(samples, **kwargs)
