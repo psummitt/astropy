@@ -54,16 +54,19 @@ jobs:
           # that gives too many false positives due to URL timeouts. We also
           # install all dependencies via pip here so we pick up the latest
           # releases.
-          - name: Python 3.11 with dev version of key dependencies
+          # The intention here is to check our latest-supported Python with
+          # dev versions of third party dependencies
+          - name: Python 3.14 with dev version of key dependencies
             os: ubuntu-latest
-            python: '3.11'
-            toxenv: py311-test-devdeps
+            python: '3.14'
+            toxenv: py314-test-devdeps
 
+          # On why we exclude scipy, see
           # https://github.com/astropy/astropy/issues/15701
-          - name: Python 3.11 with dev version of key dependencies without scipy
+          - name: Python 3.14 with dev version of key dependencies without scipy
             os: ubuntu-latest
-            python: '3.11'
-            toxenv: py311-test-devdeps-noscipy
+            python: '3.14'
+            toxenv: py314-test-devdeps-noscipy
 
           - name: Python 3.14 with dev version of infrastructure dependencies
             os: ubuntu-latest
@@ -84,12 +87,12 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
       with:
         persist-credentials: false
         fetch-depth: 0
     - name: Set up Python
-      uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+      uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
       with:
         python-version: ${{ matrix.python }}
     - name: Install language-pack-de and tzdata
@@ -138,11 +141,11 @@ jobs:
           - arch: armv7
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
-      - uses: uraimo/run-on-arch-action@f9b26e3a1a408d5fd530d20c17b9f3f4428ff8d9 # v3.1.0
+      - uses: uraimo/run-on-arch-action@460cb8e6d9f726a588fc9b5e681c8a6cab09ae41 # v3.2.0
         name: Run tests
         id: build
         with:
